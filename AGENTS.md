@@ -1,265 +1,399 @@
-You are an expert [0.7 Dioxus](https://dioxuslabs.com/learn/0.7) assistant. Dioxus 0.7 changes every api in dioxus. Only use this up to date documentation. `cx`, `Scope`, and `use_state` are gone
+# Agents Architecture Guide
 
-Provide concise code examples with detailed descriptions
+This document provides an overview of the agentic backend architecture for building autonomous, resumable job processing systems.
 
-# Dioxus Dependency
+## Overview
 
-You can add Dioxus to your `Cargo.toml` like this:
+This template provides a production-ready foundation for agentic backends:
 
-```toml
-[dependencies]
-dioxus = { version = "0.7.1" }
+- **Pausable/Resumable Jobs** - Jobs persist state and can be paused, resumed, or cancelled
+- **Priority Queues** - Jobs are processed by priority (Critical > High > Normal > Low)
+- **Automatic Retries** - Failed jobs retry with exponential backoff (configurable)
+- **Real-time Monitoring** - SSE-based event streaming for live dashboard updates
+- **Supervisor Hierarchy** - Erlang-style supervision for fault tolerance
 
-[features]
-default = ["web", "webview", "server"]
-web = ["dioxus/web"]
-webview = ["dioxus/desktop"]
-server = ["dioxus/server"]
+## Architecture Layers
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Dioxus Frontend                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ AdminDash   │  │ QueueList   │  │ JobDetail           │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ Server Functions
+┌───────────────────────────┴─────────────────────────────────┐
+│                      API Layer                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ queues.rs   │  │ jobs.rs     │  │ realtime.rs (SSE)   │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ Actor Messages
+┌───────────────────────────┴─────────────────────────────────┐
+│                    Actor System                             │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │                   Supervisor                            ││
+│  │  ┌──────────────┐  ┌──────────────┐  ┌────────────┐    ││
+│  │  │ QueueActor 1 │  │ QueueActor 2 │  │ ...        │    ││
+│  │  │  Workers...  │  │  Workers...  │  │            │    ││
+│  │  └──────────────┘  └──────────────┘  └────────────┘    ││
+│  └─────────────────────────────────────────────────────────┘│
+└───────────────────────────┬─────────────────────────────────┘
+                            │ DB Operations
+┌───────────────────────────┴─────────────────────────────────┐
+│                    SurrealDB                                │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ queue       │  │ job         │  │ job_history         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-# Launching your application
+## Adding New Job Types
 
-You need to create a main function that sets up the Dioxus runtime and mounts your root component.
+### 1. Define the Job Handler
+
+Create a handler in `packages/api/src/init.rs`:
 
 ```rust
-use dioxus::prelude::*;
+handlers.register(FnHandler::new("my-job-type", |job: &Job| {
+    let payload = job.payload.clone();
+    Box::pin(async move {
+        // Extract parameters from payload
+        let param = payload.get("param")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing param")?;
 
-fn main() {
-	dioxus::launch(App);
-}
+        // Do the work
+        let result = do_work(param).await?;
 
-#[component]
-fn App() -> Element {
-	rsx! { "Hello, Dioxus!" }
-}
+        // Return success with optional output
+        Ok(JobResult::with_output(
+            "Job completed successfully",
+            serde_json::json!({ "result": result }),
+        ))
+    })
+}));
 ```
 
-Then serve with `dx serve`:
-
-```sh
-curl -sSL http://dioxus.dev/install.sh | sh
-dx serve
-```
-
-# UI with RSX
+### 2. Create Jobs via API
 
 ```rust
-rsx! {
-	div {
-		class: "container", // Attribute
-		color: "red", // Inline styles
-		width: if condition { "100%" }, // Conditional attributes
-		"Hello, Dioxus!"
-	}
-	// Prefer loops over iterators
-	for i in 0..5 {
-		div { "{i}" } // use elements or components directly in loops
-	}
-	if condition {
-		div { "Condition is true!" } // use elements or components directly in conditionals
-	}
+let request = CreateJobRequest {
+    queue_id: queue_id.to_string(),
+    job_type: "my-job-type".to_string(),
+    payload: json!({ "param": "value" }),
+    priority: Some("normal".to_string()),
+    max_retries: Some(3),
+    timeout_secs: Some(300),
+    tags: vec!["my-tag".to_string()],
+};
 
-	{children} // Expressions are wrapped in brace
-	{(0..5).map(|i| rsx! { span { "Item {i}" } })} // Iterators must be wrapped in braces
+let job = api::enqueue_job(request).await?;
+```
+
+### 3. Add UI for the Job Type (Optional)
+
+Update `packages/ui/src/admin/create_job_form.rs` to add the new job type to the dropdown:
+
+```rust
+option { value: "my-job-type", "My Job Type" }
+```
+
+## Job Lifecycle
+
+```
+Created → Pending → Running → Completed
+                  ↘         ↗
+                   → Failed → (Retry) → Pending
+                          ↘
+                           → (Max Retries) → Archived
+```
+
+1. **Created** - Job is created via API
+2. **Pending** - Job is in the queue waiting for a worker
+3. **Running** - Worker is executing the job
+4. **Completed** - Job succeeded, moved to history
+5. **Failed** - Job failed, may retry or archive
+6. **Cancelled** - Job was manually cancelled
+
+## Testing Strategies
+
+### Unit Tests
+
+Test individual components in isolation:
+
+```rust
+#[tokio::test]
+async fn test_job_creation() {
+    // Initialize in-memory DB
+    db::init(DbConfig::memory()).await.unwrap();
+
+    let queue = Queue::new("test-queue");
+    QueueRepository::create(&queue).await.unwrap();
+
+    let job = Job::new(queue.id, "echo", json!({"msg": "hello"}));
+    JobRepository::create(&job).await.unwrap();
+
+    let loaded = JobRepository::get(job.id).await.unwrap();
+    assert_eq!(loaded.job_type, "echo");
 }
 ```
 
-# Assets
+### Integration Tests
 
-The asset macro can be used to link to local files to use in your project. All links start with `/` and are relative to the root of your project.
+Test the full actor system:
 
 ```rust
-rsx! {
-	img {
-		src: asset!("/assets/image.png"),
-		alt: "An image",
-	}
+#[tokio::test]
+async fn test_job_processing() {
+    // Setup
+    db::init(DbConfig::memory()).await.unwrap();
+
+    let mut handlers = JobHandlerRegistry::new();
+    handlers.register(FnHandler::new("test", |_| {
+        Box::pin(async { Ok(JobResult::new("done")) })
+    }));
+
+    let (supervisor, _) = start_supervisor(handlers).await.unwrap();
+
+    // Create queue
+    let (tx, rx) = ractor::call::create_oneshot();
+    supervisor.send_message(SupervisorMessage::CreateQueue {
+        name: "test".into(),
+        description: None,
+        reply: tx,
+    }).unwrap();
+    let queue = rx.await.unwrap().unwrap();
+
+    // Enqueue job
+    let job = Job::new(queue.id, "test", json!({}));
+    let (tx, rx) = ractor::call::create_oneshot();
+    supervisor.send_message(SupervisorMessage::EnqueueJob {
+        queue_id: queue.id,
+        job,
+        reply: tx,
+    }).unwrap();
+    rx.await.unwrap().unwrap();
+
+    // Wait for processing
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Verify completion
+    // ...
 }
 ```
 
-## Styles
+### E2E Tests with Playwright
 
-The `document::Stylesheet` component will inject the stylesheet into the `<head>` of the document
-
-```rust
-rsx! {
-	document::Stylesheet {
-		href: asset!("/assets/styles.css"),
-	}
-}
-```
-
-# Components
-
-Components are the building blocks of apps
-
-* Component are functions annotated with the `#[component]` macro.
-* The function name must start with a capital letter or contain an underscore.
-* A component re-renders only under two conditions:
-	1.  Its props change (as determined by `PartialEq`).
-	2.  An internal reactive state it depends on is updated.
-
-```rust
-#[component]
-fn Input(mut value: Signal<String>) -> Element {
-	rsx! {
-		input {
-            value,
-			oninput: move |e| {
-				*value.write() = e.value();
-			},
-			onkeydown: move |e| {
-				if e.key() == Key::Enter {
-					value.write().clear();
-				}
-			},
-		}
-	}
-}
-```
-
-Each component accepts function arguments (props)
-
-* Props must be owned values, not references. Use `String` and `Vec<T>` instead of `&str` or `&[T]`.
-* Props must implement `PartialEq` and `Clone`.
-* To make props reactive and copy, you can wrap the type in `ReadOnlySignal`. Any reactive state like memos and resources that read `ReadOnlySignal` props will automatically re-run when the prop changes.
-
-# State
-
-A signal is a wrapper around a value that automatically tracks where it's read and written. Changing a signal's value causes code that relies on the signal to rerun.
-
-## Local State
-
-The `use_signal` hook creates state that is local to a single component. You can call the signal like a function (e.g. `my_signal()`) to clone the value, or use `.read()` to get a reference. `.write()` gets a mutable reference to the value.
-
-Use `use_memo` to create a memoized value that recalculates when its dependencies change. Memos are useful for expensive calculations that you don't want to repeat unnecessarily.
-
-```rust
-#[component]
-fn Counter() -> Element {
-	let mut count = use_signal(|| 0);
-	let mut doubled = use_memo(move || count() * 2); // doubled will re-run when count changes because it reads the signal
-
-	rsx! {
-		h1 { "Count: {count}" } // Counter will re-render when count changes because it reads the signal
-		h2 { "Doubled: {doubled}" }
-		button {
-			onclick: move |_| *count.write() += 1, // Writing to the signal rerenders Counter
-			"Increment"
-		}
-		button {
-			onclick: move |_| count.with_mut(|count| *count += 1), // use with_mut to mutate the signal
-			"Increment with with_mut"
-		}
-	}
-}
-```
-
-## Context API
-
-The Context API allows you to share state down the component tree. A parent provides the state using `use_context_provider`, and any child can access it with `use_context`
-
-```rust
-#[component]
-fn App() -> Element {
-	let mut theme = use_signal(|| "light".to_string());
-	use_context_provider(|| theme); // Provide a type to children
-	rsx! { Child {} }
-}
-
-#[component]
-fn Child() -> Element {
-	let theme = use_context::<Signal<String>>(); // Consume the same type
-	rsx! {
-		div {
-			"Current theme: {theme}"
-		}
-	}
-}
-```
-
-# Async
-
-For state that depends on an asynchronous operation (like a network request), Dioxus provides a hook called `use_resource`. This hook manages the lifecycle of the async task and provides the result to your component.
-
-* The `use_resource` hook takes an `async` closure. It re-runs this closure whenever any signals it depends on (reads) are updated
-* The `Resource` object returned can be in several states when read:
-1. `None` if the resource is still loading
-2. `Some(value)` if the resource has successfully loaded
-
-```rust
-let mut dog = use_resource(move || async move {
-	// api request
+```typescript
+test('admin dashboard loads', async ({ page }) => {
+    await page.goto('/admin');
+    await expect(page.locator('h1')).toContainText('Job Queue Admin');
 });
 
-match dog() {
-	Some(dog_info) => rsx! { Dog { dog_info } },
-	None => rsx! { "Loading..." },
-}
+test('can create and view job', async ({ page }) => {
+    await page.goto('/admin');
+
+    // Select queue
+    await page.click('.queue-card');
+
+    // Create job
+    await page.click('text=+ New Job');
+    await page.selectOption('select', 'echo');
+    await page.click('text=Create Job');
+
+    // Verify job appears
+    await expect(page.locator('.job-table')).toContainText('echo');
+});
 ```
 
-# Routing
+## Deployment (Railway)
 
-All possible routes are defined in a single Rust `enum` that derives `Routable`. Each variant represents a route and is annotated with `#[route("/path")]`. Dynamic Segments can capture parts of the URL path as parameters by using `:name` in the route string. These become fields in the enum variant.
+### Environment Variables
 
-The `Router<Route> {}` component is the entry point that manages rendering the correct component for the current URL.
+```bash
+# Railway provides these automatically
+RAILWAY_ENVIRONMENT=production
 
-You can use the `#[layout(NavBar)]` to create a layout shared between pages and place an `Outlet<Route> {}` inside your layout component. The child routes will be rendered in the outlet.
+# Optional: Custom database path
+DATABASE_PATH=./data/surrealdb
+```
+
+### Persistence
+
+The template automatically uses file-based storage on Railway:
 
 ```rust
-#[derive(Routable, Clone, PartialEq)]
-enum Route {
-	#[layout(NavBar)] // This will use NavBar as the layout for all routes
-		#[route("/")]
-		Home {},
-		#[route("/blog/:id")] // Dynamic segment
-		BlogPost { id: i32 },
-}
-
-#[component]
-fn NavBar() -> Element {
-	rsx! {
-		a { href: "/", "Home" }
-		Outlet<Route> {} // Renders Home or BlogPost
-	}
-}
-
-#[component]
-fn App() -> Element {
-	rsx! { Router::<Route> {} }
-}
+let db_config = if std::env::var("RAILWAY_ENVIRONMENT").is_ok() {
+    DbConfig::file("./data/surrealdb")
+} else {
+    DbConfig::memory()
+};
 ```
+
+### Railway.toml
 
 ```toml
-dioxus = { version = "0.7.1", features = ["router"] }
+[build]
+builder = "dockerfile"
+
+[deploy]
+startCommand = "dx serve --release"
+healthcheckPath = "/"
+healthcheckTimeout = 30
 ```
 
-# Fullstack
+### Dockerfile
 
-Fullstack enables server rendering and ipc calls. It uses Cargo features (`server` and a client feature like `web`) to split the code into a server and client binaries.
+```dockerfile
+FROM rust:1.83-bookworm as builder
+WORKDIR /app
+RUN cargo install dioxus-cli
+COPY . .
+RUN dx build --release
 
-```toml
-dioxus = { version = "0.7.1", features = ["fullstack"] }
+FROM debian:bookworm-slim
+COPY --from=builder /app/target/release/web /app/web
+COPY --from=builder /app/dist /app/dist
+WORKDIR /app
+EXPOSE 8080
+CMD ["./web"]
 ```
 
-## Server Functions
+## Monitoring & Observability
 
-Use the `#[post]` / `#[get]` macros to define an `async` function that will only run on the server. On the server, this macro generates an API endpoint. On the client, it generates a function that makes an HTTP request to that endpoint.
+### Logging
+
+The template uses `tracing` for structured logging:
 
 ```rust
-#[post("/api/double/:path/&query")]
-async fn double_server(number: i32, path: String, query: i32) -> Result<i32, ServerFnError> {
-	tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-	Ok(number * 2)
+tracing::info!("Job {} started", job.id);
+tracing::warn!("Job {} failed: {}", job.id, error);
+```
+
+### Events
+
+Subscribe to real-time events:
+
+```rust
+let mut rx = api::subscribe_events();
+while let Ok(event) = rx.recv().await {
+    match event {
+        JobEvent::JobCompleted { job_id, duration_ms, .. } => {
+            println!("Job {} completed in {}ms", job_id, duration_ms);
+        }
+        _ => {}
+    }
 }
 ```
 
-## Hydration
+## Best Practices
 
-Hydration is the process of making a server-rendered HTML page interactive on the client. The server sends the initial HTML, and then the client-side runs, attaches event listeners, and takes control of future rendering.
+### 1. Idempotent Handlers
 
-### Errors
-The initial UI rendered by the component on the client must be identical to the UI rendered on the server.
+Design job handlers to be idempotent - running the same job twice should produce the same result:
 
-* Use the `use_server_future` hook instead of `use_resource`. It runs the future on the server, serializes the result, and sends it to the client, ensuring the client has the data immediately for its first render.
-* Any code that relies on browser-specific APIs (like accessing `localStorage`) must be run *after* hydration. Place this code inside a `use_effect` hook.
+```rust
+handlers.register(FnHandler::new("process-order", |job| {
+    Box::pin(async move {
+        let order_id = job.payload["order_id"].as_str().unwrap();
+
+        // Check if already processed
+        if is_order_processed(order_id).await? {
+            return Ok(JobResult::new("Already processed"));
+        }
+
+        // Process order...
+        process_order(order_id).await?;
+        mark_order_processed(order_id).await?;
+
+        Ok(JobResult::new("Order processed"))
+    })
+}));
+```
+
+### 2. Graceful Timeouts
+
+Set appropriate timeouts and handle them:
+
+```rust
+let job = Job::new(queue_id, "long-running", payload)
+    .with_timeout(600)  // 10 minutes
+    .with_max_retries(2);
+```
+
+### 3. Priority Appropriately
+
+Use priority levels thoughtfully:
+
+- **Critical** - User-facing, time-sensitive (password resets)
+- **High** - Important but not urgent (email notifications)
+- **Normal** - Standard background work
+- **Low** - Maintenance, cleanup, analytics
+
+### 4. Tag for Filtering
+
+Use tags for organization and filtering:
+
+```rust
+let job = Job::new(queue_id, "send-email", payload)
+    .with_tags(vec!["email".into(), "marketing".into()]);
+```
+
+## Extending the System
+
+### Adding Queue Types
+
+Create specialized queues for different workloads:
+
+```rust
+// High-throughput queue
+let config = QueueConfig {
+    concurrency: 16,
+    default_timeout_secs: 30,
+    max_queue_size: Some(10000),
+    rate_limit: Some(100.0), // 100 jobs/sec
+    ..Default::default()
+};
+
+let queue = Queue::new("fast-queue").with_config(config);
+```
+
+### Custom Supervision
+
+Handle actor failures:
+
+```rust
+async fn handle_supervisor_evt(
+    &self,
+    _myself: ActorRef<Self::Msg>,
+    message: SupervisionEvent,
+    state: &mut Self::State,
+) -> Result<(), ActorProcessingErr> {
+    match message {
+        SupervisionEvent::ActorTerminated(cell, _, reason) => {
+            // Restart the actor or escalate
+            if should_restart(&reason) {
+                restart_actor(cell).await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+```
+
+### Metrics Collection
+
+Add custom metrics:
+
+```rust
+// In queue actor
+state.queue.stats.completed += 1;
+
+// Calculate throughput
+let elapsed = now - state.last_stats_update;
+state.queue.stats.throughput_per_min = Some(
+    (state.jobs_since_last_update as f64 / elapsed.as_secs_f64()) * 60.0
+);
+```

@@ -263,3 +263,222 @@ The initial UI rendered by the component on the client must be identical to the 
 
 * Use the `use_server_future` hook instead of `use_resource`. It runs the future on the server, serializes the result, and sends it to the client, ensuring the client has the data immediately for its first render.
 * Any code that relies on browser-specific APIs (like accessing `localStorage`) must be run *after* hydration. Place this code inside a `use_effect` hook.
+
+---
+
+# Ractor Actor System
+
+This template uses [Ractor 0.15](https://docs.rs/ractor/0.15) for actor-based concurrency. Ractor provides Erlang-style actors with supervision, messaging, and RPC patterns.
+
+## Actor Basics
+
+```rust
+use ractor::{Actor, ActorProcessingErr, ActorRef};
+
+struct MyActor;
+
+impl Actor for MyActor {
+    type Msg = MyMessage;
+    type State = MyState;
+    type Arguments = ();
+
+    async fn pre_start(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        _args: Self::Arguments,
+    ) -> Result<Self::State, ActorProcessingErr> {
+        Ok(MyState::default())
+    }
+
+    async fn handle(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        message: Self::Msg,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        // Handle message
+        Ok(())
+    }
+}
+```
+
+## Spawning Actors
+
+```rust
+let (actor_ref, handle) = Actor::spawn(
+    Some("my-actor".to_string()),
+    MyActor,
+    (), // arguments
+).await?;
+
+// Send message (fire-and-forget)
+actor_ref.send_message(MyMessage::DoSomething)?;
+```
+
+## RPC Pattern (Request-Response)
+
+```rust
+// In message enum
+enum MyMessage {
+    GetValue { reply: RpcReplyPort<i32> },
+}
+
+// Sending with reply
+let (tx, rx) = ractor::call::create_oneshot();
+actor_ref.send_message(MyMessage::GetValue { reply: tx })?;
+let value = rx.await?;
+
+// In handler
+match message {
+    MyMessage::GetValue { reply } => {
+        let _ = reply.send(42);
+    }
+}
+```
+
+## Native Async Traits
+
+Ractor 0.15+ uses native `async fn` in traits (Rust 1.75+). No `#[async_trait]` macro needed when using `default-features = false`.
+
+---
+
+# SurrealDB Integration
+
+This template uses [SurrealDB 2.6](https://docs.rs/surrealdb/2.6) for data persistence. SurrealDB is a multi-model database supporting documents, graphs, and full-text search.
+
+## Connection
+
+```rust
+use surrealdb::engine::any::connect;
+use surrealdb::Surreal;
+
+// In-memory (testing)
+let db = connect("mem://").await?;
+
+// File-based (production)
+let db = connect("file://./data/surrealdb").await?;
+
+// Select namespace and database
+db.use_ns("myapp").use_db("main").await?;
+```
+
+## Schema Definition (SurrealQL)
+
+```sql
+-- Define table with schema
+DEFINE TABLE user SCHEMAFULL;
+DEFINE FIELD name ON user TYPE string;
+DEFINE FIELD email ON user TYPE string;
+DEFINE FIELD created_at ON user TYPE datetime DEFAULT time::now();
+
+-- Indexes
+DEFINE INDEX user_email ON user FIELDS email UNIQUE;
+```
+
+## CRUD Operations
+
+```rust
+// Create
+let user: Option<User> = db
+    .create(("user", "user_id"))
+    .content(&user_data)
+    .await?;
+
+// Read
+let user: Option<User> = db.select(("user", "user_id")).await?;
+
+// Update
+let user: Option<User> = db
+    .update(("user", "user_id"))
+    .merge(json!({ "name": "New Name" }))
+    .await?;
+
+// Delete
+let _: Option<User> = db.delete(("user", "user_id")).await?;
+
+// Query
+let mut result = db
+    .query("SELECT * FROM user WHERE email = $email")
+    .bind(("email", "test@example.com"))
+    .await?;
+let users: Vec<User> = result.take(0)?;
+```
+
+---
+
+# Job Queue System
+
+This template includes a complete job queue system built with Ractor actors and SurrealDB persistence.
+
+## Architecture
+
+- **Supervisor** - Top-level actor managing all queues
+- **QueueActor** - Manages pending/running jobs for a single queue
+- **WorkerActor** - Executes jobs with timeout and retry support
+
+## Creating Jobs
+
+```rust
+use api::{enqueue_job, CreateJobRequest};
+
+let request = CreateJobRequest {
+    queue_id: "queue-id".to_string(),
+    job_type: "echo".to_string(),
+    payload: json!({ "message": "Hello" }),
+    priority: Some("high".to_string()),
+    max_retries: Some(3),
+    timeout_secs: Some(60),
+    tags: vec!["demo".to_string()],
+};
+
+let job = enqueue_job(request).await?;
+```
+
+## Job Handlers
+
+Register custom handlers for job types:
+
+```rust
+use actors::{JobHandlerRegistry, FnHandler, JobResult};
+
+let mut handlers = JobHandlerRegistry::new();
+
+handlers.register(FnHandler::new("my-job-type", |job: &Job| {
+    let data = job.payload.clone();
+    Box::pin(async move {
+        // Do work...
+        Ok(JobResult::new("Success"))
+    })
+}));
+```
+
+## Admin Dashboard
+
+Navigate to `/admin` to access the admin dashboard:
+- View all queues with stats (pending/running/completed/failed)
+- Pause/resume queues
+- Create new jobs
+- View job details and cancel/retry jobs
+
+---
+
+# Project Structure
+
+```
+packages/
+├── core/       # Shared domain types (Job, Queue, Events)
+├── db/         # SurrealDB integration
+├── actors/     # Ractor actor system
+├── api/        # Server functions
+├── ui/         # Shared components + admin dashboard
+└── web/        # Web application
+```
+
+## Running the App
+
+```sh
+cd packages/web
+dx serve
+```
+
+Then open http://localhost:8080/admin

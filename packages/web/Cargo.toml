@@ -1,13 +1,20 @@
 [package]
 name = "web"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 dioxus = { workspace = true, features = ["router", "fullstack"] }
 ui = { workspace = true }
+queue_core = { workspace = true }
+
+# Server-only dependencies
+api = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
 
 [features]
 default = []
 web = ["dioxus/web"]
-server = ["dioxus/server", "ui/server"]
+server = ["dioxus/server", "ui/server", "dep:api", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]

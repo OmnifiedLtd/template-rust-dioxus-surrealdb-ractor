@@ -1,0 +1,21 @@
+[package]
+name = "db"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+queue_core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+
+# SurrealDB with configurable backends
+surrealdb = { workspace = true, features = ["kv-mem"] }
+
+[features]
+default = ["memory"]
+memory = []
+rocksdb = ["surrealdb/kv-rocksdb"]

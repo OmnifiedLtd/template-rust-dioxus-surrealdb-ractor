@@ -1,0 +1,21 @@
+[package]
+name = "actors"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+queue_core = { workspace = true }
+db = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+futures-util = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Ractor with native async fn in traits
+ractor = { workspace = true }
+
+[features]
+default = []
