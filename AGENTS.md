@@ -116,7 +116,115 @@ Created → Pending → Running → Completed
 5. **Failed** - Job failed, may retry or archive
 6. **Cancelled** - Job was manually cancelled
 
+## Quality Gates (REQUIRED)
+
+**IMPORTANT**: Before returning completed work to the user, you MUST run these quality checks:
+
+### Pre-Completion Checklist
+
+```bash
+# 1. Format check (must pass)
+cargo fmt --all -- --check
+
+# 2. Type check
+cargo check --all-targets --all-features
+
+# 3. Standard lint
+cargo clippy --all-targets --all-features -- -D warnings
+
+# 4. Strict no-panic lint (REQUIRED for all production code)
+cargo clippy --all-targets --all-features -- \
+    -D clippy::unwrap_used \
+    -D clippy::expect_used \
+    -D clippy::panic \
+    -D clippy::unimplemented \
+    -D clippy::todo \
+    -D clippy::unreachable \
+    -D clippy::indexing_slicing
+
+# 5. Run tests
+cargo test --all-features --workspace
+
+# 6. Build WASM (for web target)
+cd packages/web && npm run tailwind && dx build
+```
+
+### No-Panic Policy
+
+This codebase enforces a **strict no-panic policy**. The following are **forbidden** in production code:
+
+| Forbidden | Safe Alternative |
+|-----------|------------------|
+| `.unwrap()` | `.ok_or()`, `.unwrap_or()`, `.unwrap_or_default()`, `?` |
+| `.expect()` | `.ok_or_else()`, `.map_err()`, `?` with context |
+| `panic!()` | Return `Result<T, E>` or `Option<T>` |
+| `todo!()` | Return `Err(...)` or implement properly |
+| `unimplemented!()` | Return `Err(...)` describing why |
+| `unreachable!()` | Return `Err(...)` or handle the case |
+| `array[i]` | `.get(i)`, `.get_mut(i)`, iterators |
+
+### Why No Panics?
+
+Actors must handle errors gracefully to maintain system stability:
+- Panicking actors crash and need supervisor intervention
+- User-facing errors should be informative, not stack traces
+- File-based persistence can fail - handle it gracefully
+- Network/DB operations can timeout - handle it gracefully
+
+---
+
 ## Testing Strategies
+
+### SurrealDB Testing Requirements
+
+**IMPORTANT**: All SurrealDB queries and mutations must have corresponding tests.
+
+For every repository method, write tests that verify:
+1. **Happy path** - Normal operation succeeds
+2. **Not found** - Handles missing records gracefully
+3. **Validation** - Rejects invalid data
+4. **Edge cases** - Empty results, large data, special characters
+
+```rust
+#[tokio::test]
+async fn test_job_create() {
+    // Setup in-memory DB
+    db::init(DbConfig::memory()).await.unwrap();
+
+    let queue = Queue::new("test-queue");
+    QueueRepository::create(&queue).await.unwrap();
+
+    let job = Job::new(queue.id, "echo", json!({"msg": "hello"}));
+    JobRepository::create(&job).await.unwrap();
+
+    // Verify
+    let loaded = JobRepository::get(job.id).await.unwrap();
+    assert_eq!(loaded.job_type, "echo");
+}
+
+#[tokio::test]
+async fn test_job_not_found() {
+    db::init(DbConfig::memory()).await.unwrap();
+
+    let result = JobRepository::get(JobId::new()).await;
+    assert!(result.is_err()); // Should return error, not panic
+}
+
+#[tokio::test]
+async fn test_job_list_with_filters() {
+    db::init(DbConfig::memory()).await.unwrap();
+
+    // Create test data...
+
+    let filter = JobFilter {
+        status: Some(JobStatus::Pending),
+        ..Default::default()
+    };
+
+    let jobs = JobRepository::list(Some(filter)).await.unwrap();
+    assert!(jobs.iter().all(|j| j.status == JobStatus::Pending));
+}
+```
 
 ### Unit Tests
 
@@ -206,6 +314,35 @@ test('can create and view job', async ({ page }) => {
     await expect(page.locator('.job-table')).toContainText('echo');
 });
 ```
+
+## CI/CD Pipeline
+
+The project includes a comprehensive GitHub Actions CI pipeline (`.github/workflows/ci.yml`) that runs on every push and pull request:
+
+| Job | Description | Blocking? |
+|-----|-------------|-----------|
+| `format` | Checks `cargo fmt` formatting | Yes |
+| `check` | Runs `cargo check` for compilation errors | Yes |
+| `lint` | Runs strict Clippy with no-panic policy | Yes |
+| `test` | Runs all tests (debug + release) | Yes |
+| `docs` | Builds documentation with warnings as errors | Yes |
+| `wasm` | Builds WASM target with Dioxus CLI | Yes |
+| `security` | Runs `cargo audit` for vulnerabilities | No (advisory) |
+
+All jobs except `security` must pass for PRs to merge.
+
+### Local CI Simulation
+
+```bash
+# Run all checks locally before pushing
+cargo fmt --all -- --check && \
+cargo check --all-targets --all-features && \
+cargo clippy --all-targets --all-features -- -D warnings && \
+cargo test --all-features --workspace && \
+cargo doc --all-features --no-deps
+```
+
+---
 
 ## Deployment (Railway)
 

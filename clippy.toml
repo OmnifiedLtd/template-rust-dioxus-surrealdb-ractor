@@ -1,0 +1,22 @@
+# Clippy configuration for strict no-panic policy
+# See: https://rust-lang.github.io/rust-clippy/master/index.html
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 25
+
+# Maximum number of lines in a function
+too-many-lines-threshold = 100
+
+# Disallow certain types in public APIs
+disallowed-types = []
+
+# Disallow certain methods that can panic
+disallowed-methods = [
+    # Panicking methods - use alternatives instead
+    { path = "std::option::Option::unwrap", reason = "Use `ok_or` or `unwrap_or` instead to avoid panics" },
+    { path = "std::option::Option::expect", reason = "Use `ok_or_else` with proper error handling" },
+    { path = "std::result::Result::unwrap", reason = "Use `?` operator or handle the error explicitly" },
+    { path = "std::result::Result::expect", reason = "Use `?` operator or `map_err` for context" },
+    # Indexing that can panic
+    { path = "std::vec::Vec::remove", reason = "Check bounds first or use `swap_remove` with bounds check" },
+]

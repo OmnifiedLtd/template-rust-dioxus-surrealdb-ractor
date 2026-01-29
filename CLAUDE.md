@@ -482,3 +482,131 @@ dx serve
 ```
 
 Then open http://localhost:8080/admin
+
+---
+
+# Quality Gates (REQUIRED)
+
+**IMPORTANT: Before returning any code changes to the user, you MUST run all quality gates.**
+
+## Pre-Commit Checklist
+
+Run these commands and fix any issues before completing a task:
+
+```sh
+# 1. Format code
+cargo fmt --all
+
+# 2. Check compilation
+cargo check --all-targets --all-features
+
+# 3. Run standard lints
+cargo clippy --all-targets --all-features -- -D warnings
+
+# 4. Run strict no-panic lints
+cargo clippy --all-targets --all-features -- \
+    -D clippy::unwrap_used \
+    -D clippy::expect_used \
+    -D clippy::panic \
+    -D clippy::unimplemented \
+    -D clippy::todo \
+    -D clippy::unreachable \
+    -D clippy::indexing_slicing
+
+# 5. Run tests
+cargo test --all-features --workspace
+
+# 6. Build WASM (for web target)
+dx build
+```
+
+## No-Panic Policy
+
+**Production code MUST NOT contain any panicking operations:**
+
+- ❌ `.unwrap()` - Use `.ok_or()`, `.unwrap_or()`, or `?` operator
+- ❌ `.expect()` - Use `.ok_or_else()` with proper error context
+- ❌ `panic!()` - Return `Result` or `Option` instead
+- ❌ `todo!()` - Implement or return error
+- ❌ `unimplemented!()` - Implement or return error
+- ❌ `unreachable!()` - Handle all cases explicitly
+- ❌ `array[index]` - Use `.get(index)` with proper handling
+
+### Safe Alternatives
+
+```rust
+// Instead of unwrap
+let value = option.ok_or_else(|| MyError::NotFound)?;
+let value = option.unwrap_or_default();
+let value = option.unwrap_or_else(|| fallback());
+
+// Instead of expect
+let value = result.map_err(|e| MyError::Context(e))?;
+
+// Instead of indexing
+let value = vec.get(index).ok_or(MyError::OutOfBounds)?;
+let value = vec.first().ok_or(MyError::Empty)?;
+```
+
+## SurrealDB Testing Requirements
+
+**Every SurrealDB query and mutation MUST have corresponding tests.**
+
+### Test Structure
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn setup_test_db() -> Database {
+        // Use in-memory database for tests
+        let db = connect("mem://").await.unwrap();
+        db.use_ns("test").use_db("test").await.unwrap();
+        // Run migrations/schema
+        db
+    }
+
+    #[tokio::test]
+    async fn test_create_user() {
+        let db = setup_test_db().await;
+        // Test create operation
+    }
+
+    #[tokio::test]
+    async fn test_query_users_by_email() {
+        let db = setup_test_db().await;
+        // Test query with edge cases:
+        // - Empty results
+        // - Multiple results
+        // - Special characters in query
+    }
+}
+```
+
+### Required Test Coverage
+
+For each repository function, test:
+1. **Happy path** - Normal successful operation
+2. **Not found** - Entity doesn't exist
+3. **Validation** - Invalid input handling
+4. **Concurrent access** - Race conditions (where applicable)
+5. **Edge cases** - Empty strings, special characters, large values
+
+---
+
+# CI/CD Pipeline
+
+GitHub Actions runs on every push and PR:
+
+| Job | Description |
+|-----|-------------|
+| `format` | Checks code formatting with `rustfmt` |
+| `check` | Verifies compilation |
+| `lint` | Runs Clippy with strict no-panic rules |
+| `test` | Runs all unit and integration tests |
+| `docs` | Builds documentation |
+| `wasm` | Builds WASM target for web |
+| `security` | Runs security audit |
+
+All jobs must pass before merging.
