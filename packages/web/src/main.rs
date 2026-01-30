@@ -28,7 +28,6 @@ const MAIN_CSS: Asset = asset!("/assets/main.css");
 const ADMIN_CSS: Asset = asset!("/assets/admin.css");
 
 fn main() {
-    // Initialize logging on server
     #[cfg(feature = "server")]
     {
         tracing_subscriber::fmt()
@@ -39,23 +38,8 @@ fn main() {
     dioxus::launch(App);
 }
 
-/// Server startup hook - initialize job queue system.
-#[cfg(feature = "server")]
-#[server(endpoint = "/api/__init")]
-async fn init_server() -> Result<(), ServerFnError> {
-    api::init_job_queue().await.map_err(|e| ServerFnError::new(e.to_string()))
-}
-
 #[component]
 fn App() -> Element {
-    // Initialize server on first render (server-side only)
-    #[cfg(feature = "server")]
-    {
-        use_server_future(move || async move {
-            init_server().await.ok()
-        });
-    }
-
     rsx! {
         // Global app resources
         document::Link { rel: "icon", href: FAVICON }

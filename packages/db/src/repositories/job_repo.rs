@@ -3,24 +3,66 @@
 use queue_core::{Job, JobId, JobStatus, Priority, QueueId, QueueStats};
 use serde::{Deserialize, Serialize};
 use surrealdb::sql::Thing;
+use chrono::{DateTime, Utc};
+use serde_json::Value as JsonValue;
 
 use crate::{get_db, DbError};
 
 /// Repository for job persistence operations.
 pub struct JobRepository;
 
-/// Internal record type for SurrealDB.
-#[derive(Debug, Serialize, Deserialize)]
+/// Internal record type for reading from SurrealDB.
+#[derive(Debug, Deserialize)]
 struct JobRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<Thing>,
-    #[serde(flatten)]
-    job: Job,
+    queue_id: String,
+    job_type: String,
+    payload: JsonValue,
+    priority: Priority,
+    status: JobStatus,
+    max_retries: u32,
+    timeout_secs: u64,
+    tags: Vec<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
-/// Job history record for archival.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JobHistoryRecord {
+impl JobRecord {
+    fn into_job(self, job_id: JobId) -> Job {
+        let queue_id = QueueId::parse(&self.queue_id).unwrap_or_else(|_| QueueId::new());
+        Job {
+            id: job_id,
+            queue_id,
+            job_type: self.job_type,
+            payload: self.payload,
+            priority: self.priority,
+            status: self.status,
+            max_retries: self.max_retries,
+            timeout_secs: self.timeout_secs,
+            tags: self.tags,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+/// Struct for creating/updating jobs - omits datetime fields to use SurrealDB defaults.
+#[derive(Debug, Clone, Serialize)]
+struct JobCreate {
+    queue_id: String,
+    job_type: String,
+    payload: JsonValue,
+    priority: Priority,
+    status: JobStatus,
+    max_retries: u32,
+    timeout_secs: u64,
+    tags: Vec<String>,
+}
+
+/// Job history record for archival - omits completed_at to use SurrealDB default.
+#[derive(Debug, Serialize)]
+pub struct JobHistoryCreate {
     pub job_id: String,
     pub queue_id: String,
     pub job_type: String,
@@ -31,8 +73,9 @@ pub struct JobHistoryRecord {
     pub error: Option<String>,
     pub result_summary: Option<String>,
     pub tags: Vec<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub completed_at: chrono::DateTime<chrono::Utc>,
+    // Note: created_at from original job is stored as ISO string for reference
+    pub created_at: String,
+    // completed_at uses SurrealDB DEFAULT time::now()
 }
 
 /// Filter options for listing jobs.
@@ -51,15 +94,26 @@ impl JobRepository {
     /// Create a new job in the database.
     pub async fn create(job: &Job) -> Result<Job, DbError> {
         let db = get_db();
-        let job_clone = job.clone();
+
+        // Use JobCreate to omit datetime fields - let SurrealDB use defaults
+        let create_data = JobCreate {
+            queue_id: job.queue_id.to_string(),
+            job_type: job.job_type.clone(),
+            payload: job.payload.clone(),
+            priority: job.priority.clone(),
+            status: job.status.clone(),
+            max_retries: job.max_retries,
+            timeout_secs: job.timeout_secs,
+            tags: job.tags.clone(),
+        };
 
         let record: Option<JobRecord> = db
             .create(("job", job.id.to_string()))
-            .content(job_clone)
+            .content(create_data)
             .await?;
 
         record
-            .map(|r| r.job)
+            .map(|r| r.into_job(job.id))
             .ok_or_else(|| DbError::Query("Failed to create job".into()))
     }
 
@@ -70,7 +124,7 @@ impl JobRepository {
         let record: Option<JobRecord> = db.select(("job", id.to_string())).await?;
 
         record
-            .map(|r| r.job)
+            .map(|r| r.into_job(id))
             .ok_or_else(|| DbError::NotFound(format!("Job not found: {}", id)))
     }
 
@@ -131,7 +185,11 @@ impl JobRepository {
         let mut response = result.await?;
         let records: Vec<JobRecord> = response.take(0)?;
 
-        Ok(records.into_iter().map(|r| r.job).collect())
+        Ok(records.into_iter().map(|r| {
+            let id_str = r.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+            let job_id = JobId::parse(&id_str).unwrap_or_else(|_| JobId::new());
+            r.into_job(job_id)
+        }).collect())
     }
 
     /// Get pending jobs for a queue, ordered by priority and creation time.
@@ -153,23 +211,31 @@ impl JobRepository {
 
         let records: Vec<JobRecord> = result.take(0)?;
 
-        Ok(records.into_iter().map(|r| r.job).collect())
+        Ok(records.into_iter().map(|r| {
+            let id_str = r.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+            let job_id = JobId::parse(&id_str).unwrap_or_else(|_| JobId::new());
+            r.into_job(job_id)
+        }).collect())
     }
 
     /// Update a job's status.
     pub async fn update_status(id: JobId, status: &JobStatus) -> Result<Job, DbError> {
         let db = get_db();
+        let status_clone = status.clone();
 
-        let record: Option<JobRecord> = db
-            .update(("job", id.to_string()))
-            .merge(serde_json::json!({
-                "status": status,
-                "updated_at": chrono::Utc::now()
-            }))
+        // Use SurrealQL to set updated_at with time::now()
+        let mut result = db
+            .query("UPDATE type::thing('job', $id) SET status = $status, updated_at = time::now() RETURN AFTER")
+            .bind(("id", id.to_string()))
+            .bind(("status", status_clone))
             .await?;
 
-        record
-            .map(|r| r.job)
+        let records: Vec<JobRecord> = result.take(0)?;
+
+        records
+            .into_iter()
+            .next()
+            .map(|r| r.into_job(id))
             .ok_or_else(|| DbError::NotFound(format!("Job not found: {}", id)))
     }
 
@@ -177,17 +243,31 @@ impl JobRepository {
     pub async fn update(job: &Job) -> Result<Job, DbError> {
         let db = get_db();
 
-        let mut updated = job.clone();
-        updated.updated_at = chrono::Utc::now();
-        let job_id = job.id.to_string();
+        // Use JobCreate to avoid datetime serialization issues
+        let update_data = JobCreate {
+            queue_id: job.queue_id.to_string(),
+            job_type: job.job_type.clone(),
+            payload: job.payload.clone(),
+            priority: job.priority.clone(),
+            status: job.status.clone(),
+            max_retries: job.max_retries,
+            timeout_secs: job.timeout_secs,
+            tags: job.tags.clone(),
+        };
 
-        let record: Option<JobRecord> = db
-            .update(("job", job_id))
-            .content(updated)
+        // Use SurrealQL to set updated_at with time::now()
+        let mut result = db
+            .query("UPDATE type::thing('job', $id) CONTENT $data SET updated_at = time::now() RETURN AFTER")
+            .bind(("id", job.id.to_string()))
+            .bind(("data", update_data))
             .await?;
 
-        record
-            .map(|r| r.job)
+        let records: Vec<JobRecord> = result.take(0)?;
+
+        records
+            .into_iter()
+            .next()
+            .map(|r| r.into_job(job.id))
             .ok_or_else(|| DbError::NotFound(format!("Job not found: {}", job.id)))
     }
 
@@ -229,7 +309,7 @@ impl JobRepository {
             _ => return Ok(()), // Don't archive non-terminal jobs
         };
 
-        let history = JobHistoryRecord {
+        let history = JobHistoryCreate {
             job_id: job.id.to_string(),
             queue_id: job.queue_id.to_string(),
             job_type: job.job_type.clone(),
@@ -240,8 +320,7 @@ impl JobRepository {
             error,
             result_summary,
             tags: job.tags.clone(),
-            created_at: job.created_at,
-            completed_at: chrono::Utc::now(),
+            created_at: job.created_at.to_rfc3339(),
         };
 
         // Create history record

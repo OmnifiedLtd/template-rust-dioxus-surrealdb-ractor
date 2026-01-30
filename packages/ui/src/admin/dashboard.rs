@@ -17,19 +17,22 @@ pub fn AdminDashboard() -> Element {
     let mut show_create_form = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
 
-    // Load queues on mount
-    let queues_resource = use_server_future(move || async move {
+    // Load queues using use_resource for client-side async
+    let queues_resource = use_resource(move || async move {
         api::list_queues().await.ok()
     });
 
-    // Update queues when resource loads
+    // Get queues from resource - this triggers re-render when resource updates
+    let display_queues = match queues_resource.read().as_ref() {
+        Some(Some(q)) => q.clone(),
+        _ => Vec::new(),
+    };
+
+    // Keep signal in sync for mutations
+    let queues_for_sync = display_queues.clone();
     use_effect(move || {
-        // use_server_future returns Result<Resource<T>, RenderError>
-        // We use as_ref() to borrow, then ok() to get the Resource reference
-        if let Some(resource) = queues_resource.as_ref().ok() {
-            if let Some(Some(q)) = resource.value().cloned() {
-                queues.set(q);
-            }
+        if !queues_for_sync.is_empty() && queues().is_empty() {
+            queues.set(queues_for_sync.clone());
         }
     });
 
@@ -125,7 +128,7 @@ pub fn AdminDashboard() -> Element {
             div { class: "admin-content",
                 aside { class: "sidebar",
                     QueueList {
-                        queues: queues(),
+                        queues: display_queues.clone(),
                         selected_id: selected_queue().map(|q| q.id.to_string()),
                         on_select: on_queue_select,
                         on_pause: on_pause,

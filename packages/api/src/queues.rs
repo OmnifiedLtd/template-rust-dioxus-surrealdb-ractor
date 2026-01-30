@@ -11,6 +11,9 @@ pub async fn create_queue(name: String, description: Option<String>) -> Result<Q
         use actors::SupervisorMessage;
         use actors::global_registry;
 
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
+
         let supervisor = global_registry()
             .get_supervisor()
             .ok_or_else(|| ServerFnError::new("Supervisor not available"))?;
@@ -39,6 +42,10 @@ pub async fn list_queues() -> Result<Vec<Queue>, ServerFnError> {
         use actors::SupervisorMessage;
         use actors::global_registry;
 
+        // Ensure job queue is initialized before accessing supervisor
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
+
         let supervisor = global_registry()
             .get_supervisor()
             .ok_or_else(|| ServerFnError::new("Supervisor not available"))?;
@@ -65,6 +72,9 @@ pub async fn get_queue(id: String) -> Result<Option<Queue>, ServerFnError> {
     {
         use actors::SupervisorMessage;
         use actors::global_registry;
+
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
 
         let queue_id = QueueId::parse(&id)
             .map_err(|e| ServerFnError::new(format!("Invalid queue ID: {}", e)))?;
@@ -96,6 +106,9 @@ pub async fn get_queue_by_name(name: String) -> Result<Option<Queue>, ServerFnEr
         use actors::SupervisorMessage;
         use actors::global_registry;
 
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
+
         let supervisor = global_registry()
             .get_supervisor()
             .ok_or_else(|| ServerFnError::new("Supervisor not available"))?;
@@ -122,6 +135,9 @@ pub async fn pause_queue(id: String) -> Result<(), ServerFnError> {
     {
         use actors::SupervisorMessage;
         use actors::global_registry;
+
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
 
         let queue_id = QueueId::parse(&id)
             .map_err(|e| ServerFnError::new(format!("Invalid queue ID: {}", e)))?;
@@ -154,6 +170,9 @@ pub async fn resume_queue(id: String) -> Result<(), ServerFnError> {
         use actors::SupervisorMessage;
         use actors::global_registry;
 
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
+
         let queue_id = QueueId::parse(&id)
             .map_err(|e| ServerFnError::new(format!("Invalid queue ID: {}", e)))?;
 
@@ -184,6 +203,9 @@ pub async fn delete_queue(id: String) -> Result<(), ServerFnError> {
     {
         use actors::SupervisorMessage;
         use actors::global_registry;
+
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
 
         let queue_id = QueueId::parse(&id)
             .map_err(|e| ServerFnError::new(format!("Invalid queue ID: {}", e)))?;

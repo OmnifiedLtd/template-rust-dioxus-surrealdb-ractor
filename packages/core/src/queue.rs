@@ -66,6 +66,7 @@ impl std::fmt::Display for QueueState {
 
 /// Configuration for queue behavior.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct QueueConfig {
     /// Number of concurrent workers for this queue.
     pub concurrency: u32,
@@ -95,6 +96,7 @@ impl Default for QueueConfig {
 
 /// Statistics for a queue's current state.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct QueueStats {
     /// Number of pending jobs.
     pub pending: u64,

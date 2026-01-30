@@ -28,6 +28,9 @@ pub async fn enqueue_job(request: CreateJobRequest) -> Result<Job, ServerFnError
         use actors::SupervisorMessage;
         use actors::global_registry;
 
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
+
         let queue_id = QueueId::parse(&request.queue_id)
             .map_err(|e| ServerFnError::new(format!("Invalid queue ID: {}", e)))?;
 
@@ -84,6 +87,9 @@ pub async fn get_job(id: String) -> Result<Option<Job>, ServerFnError> {
         use actors::SupervisorMessage;
         use actors::global_registry;
 
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
+
         let job_id = JobId::parse(&id)
             .map_err(|e| ServerFnError::new(format!("Invalid job ID: {}", e)))?;
 
@@ -114,6 +120,9 @@ pub async fn cancel_job(id: String, reason: Option<String>) -> Result<(), Server
         use actors::SupervisorMessage;
         use actors::global_registry;
 
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
+
         let job_id = JobId::parse(&id)
             .map_err(|e| ServerFnError::new(format!("Invalid job ID: {}", e)))?;
 
@@ -138,7 +147,7 @@ pub async fn cancel_job(id: String, reason: Option<String>) -> Result<(), Server
 }
 
 /// List jobs in a queue.
-#[get("/api/queues/:queue_id/jobs")]
+#[post("/api/queues/:queue_id/jobs")]
 pub async fn list_queue_jobs(
     queue_id: String,
     status: Option<String>,
@@ -147,6 +156,9 @@ pub async fn list_queue_jobs(
     #[cfg(feature = "server")]
     {
         use db::repositories::JobRepository;
+
+        crate::ensure_initialized().await
+            .map_err(|e| ServerFnError::new(format!("Initialization failed: {}", e)))?;
 
         let queue_id = QueueId::parse(&queue_id)
             .map_err(|e| ServerFnError::new(format!("Invalid queue ID: {}", e)))?;

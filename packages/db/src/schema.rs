@@ -89,7 +89,7 @@ DEFINE FIELD IF NOT EXISTS duration_ms ON job_history TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS error ON job_history TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS result_summary ON job_history TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS tags ON job_history TYPE array DEFAULT [];
-DEFINE FIELD IF NOT EXISTS created_at ON job_history TYPE datetime;
+DEFINE FIELD IF NOT EXISTS created_at ON job_history TYPE string;
 DEFINE FIELD IF NOT EXISTS completed_at ON job_history TYPE datetime DEFAULT time::now();
 
 -- Indexes for analytics queries

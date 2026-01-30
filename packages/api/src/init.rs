@@ -4,11 +4,36 @@ use actors::{JobHandlerRegistry, start_supervisor, FnHandler};
 use actors::global_registry;
 use queue_core::{Job, JobResult};
 use db::{DbConfig, init as init_db};
+use tokio::sync::OnceCell;
+
+/// Global initialization cell - ensures init happens exactly once.
+static INIT: OnceCell<Result<(), String>> = OnceCell::const_new();
+
+/// Ensure the job queue system is initialized.
+///
+/// This can be called from any API endpoint - it will initialize on first call
+/// and return immediately on subsequent calls.
+pub async fn ensure_initialized() -> Result<(), String> {
+    INIT.get_or_init(|| async {
+        match init_job_queue_inner().await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::error!("Failed to initialize job queue: {}", e);
+                Err(e.to_string())
+            }
+        }
+    }).await.clone()
+}
 
 /// Initialize the job queue system.
 ///
 /// This should be called once at server startup before handling requests.
 pub async fn init_job_queue() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_initialized().await.map_err(|e| e.into())
+}
+
+/// Internal initialization logic.
+async fn init_job_queue_inner() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Initializing job queue system...");
 
     // Initialize database
