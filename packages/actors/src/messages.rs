@@ -8,7 +8,7 @@ use ractor::RpcReplyPort;
 pub enum QueueMessage {
     /// Enqueue a new job.
     Enqueue {
-        job: Job,
+        job: Box<Job>,
         reply: RpcReplyPort<Result<Job, String>>,
     },
 
@@ -65,14 +65,10 @@ pub enum QueueMessage {
     Resume,
 
     /// Get queue info.
-    GetInfo {
-        reply: RpcReplyPort<Queue>,
-    },
+    GetInfo { reply: RpcReplyPort<Queue> },
 
     /// Get queue stats.
-    GetStats {
-        reply: RpcReplyPort<QueueStats>,
-    },
+    GetStats { reply: RpcReplyPort<QueueStats> },
 
     /// Shutdown the queue gracefully.
     Shutdown,
@@ -85,7 +81,7 @@ pub enum QueueMessage {
 #[derive(Debug)]
 pub enum WorkerMessage {
     /// Start working on a job.
-    ProcessJob { job: Job },
+    ProcessJob { job: Box<Job> },
 
     /// Stop current job (cancel).
     StopJob { reason: String },
@@ -109,6 +105,11 @@ pub enum SupervisorMessage {
         description: Option<String>,
         reply: RpcReplyPort<Result<Queue, String>>,
     },
+    /// Register an existing queue from persistence.
+    RegisterQueue {
+        queue: Queue,
+        reply: RpcReplyPort<Result<Queue, String>>,
+    },
 
     /// Get a queue by ID.
     GetQueue {
@@ -123,9 +124,7 @@ pub enum SupervisorMessage {
     },
 
     /// List all queues.
-    ListQueues {
-        reply: RpcReplyPort<Vec<Queue>>,
-    },
+    ListQueues { reply: RpcReplyPort<Vec<Queue>> },
 
     /// Pause a queue.
     PauseQueue {
@@ -181,9 +180,11 @@ pub enum SupervisorMessage {
 }
 
 /// Result type for internal operations.
+#[allow(dead_code)]
 pub type ActorResult<T> = Result<T, ActorError>;
 
 /// Error type for actor operations.
+#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum ActorError {
     #[error("Queue not found: {0}")]

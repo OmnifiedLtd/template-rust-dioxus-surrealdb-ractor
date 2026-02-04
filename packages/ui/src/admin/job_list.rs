@@ -49,8 +49,8 @@ pub fn JobList(props: JobListProps) -> Element {
                             JobRow {
                                 key: "{job.id}",
                                 job: job.clone(),
-                                on_select: props.on_select.clone(),
-                                on_cancel: props.on_cancel.clone(),
+                                on_select: props.on_select,
+                                on_cancel: props.on_cancel,
                             }
                         }
                     }

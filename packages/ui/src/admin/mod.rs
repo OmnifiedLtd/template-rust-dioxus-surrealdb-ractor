@@ -1,19 +1,19 @@
 //! Admin dashboard components for the job queue system.
 
+mod create_job_form;
 mod dashboard;
-mod queue_list;
-mod queue_card;
+mod job_detail;
 mod job_list;
 mod job_row;
-mod job_detail;
+mod queue_card;
+mod queue_list;
 mod status_badge;
-mod create_job_form;
 
+pub use create_job_form::CreateJobForm;
 pub use dashboard::AdminDashboard;
-pub use queue_list::QueueList;
-pub use queue_card::QueueCard;
+pub use job_detail::JobDetail;
 pub use job_list::JobList;
 pub use job_row::JobRow;
-pub use job_detail::JobDetail;
-pub use status_badge::{StatusBadge, StateBadge};
-pub use create_job_form::CreateJobForm;
+pub use queue_card::QueueCard;
+pub use queue_list::QueueList;
+pub use status_badge::{StateBadge, StatusBadge};

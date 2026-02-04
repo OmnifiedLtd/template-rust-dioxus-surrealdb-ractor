@@ -9,8 +9,8 @@
 //! - `rocksdb`: Use RocksDB for persistent file-based storage
 
 mod connection;
-mod schema;
 pub mod repositories;
+mod schema;
 
 pub use connection::{Database, DbConfig, DbError, get_db, init_db};
 pub use schema::init_schema;

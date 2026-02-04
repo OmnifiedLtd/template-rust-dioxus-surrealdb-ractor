@@ -34,19 +34,16 @@ impl std::fmt::Display for JobId {
 }
 
 /// Priority level for job execution order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
     Low = 0,
+    #[default]
     Normal = 1,
     High = 2,
     Critical = 3,
-}
-
-impl Default for Priority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 impl std::fmt::Display for Priority {
@@ -61,10 +58,11 @@ impl std::fmt::Display for Priority {
 }
 
 /// Current status of a job in its lifecycle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum JobStatus {
     /// Job is waiting to be processed.
+    #[default]
     Pending,
     /// Job is currently being executed by a worker.
     Running {
@@ -120,12 +118,6 @@ impl JobStatus {
     }
 }
 
-impl Default for JobStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
-
 /// Result of a completed job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobResult {
@@ -167,6 +159,9 @@ pub struct Job {
     pub priority: Priority,
     /// Current status.
     pub status: JobStatus,
+    /// Number of attempts so far.
+    #[serde(default)]
+    pub attempts: u32,
     /// Maximum number of retry attempts.
     pub max_retries: u32,
     /// Timeout in seconds for job execution.
@@ -195,6 +190,7 @@ impl Job {
             payload,
             priority: Priority::default(),
             status: JobStatus::Pending,
+            attempts: 0,
             max_retries: 3,
             timeout_secs: 300, // 5 minutes default
             created_at: now,

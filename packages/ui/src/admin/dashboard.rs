@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use queue_core::{Job, Queue};
 
-use super::{QueueList, JobList, JobDetail, CreateJobForm};
+use super::{CreateJobForm, JobDetail, JobList, QueueList};
 
 /// Main admin dashboard component.
 #[component]
@@ -16,20 +16,21 @@ pub fn AdminDashboard() -> Element {
     let mut loading_jobs = use_signal(|| false);
     let mut show_create_form = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
+    let mut queues_initialized = use_signal(|| false);
 
-    // Load queues on mount
-    let queues_resource = use_server_future(move || async move {
-        api::list_queues().await.ok()
-    });
+    // Load queues using use_resource for client-side async
+    let queues_resource = use_resource(move || async move { api::list_queues().await.ok() });
 
-    // Update queues when resource loads
+    // Keep signal in sync for mutations and UI updates
+    let queues_resource_sync = queues_resource;
     use_effect(move || {
-        // use_server_future returns Result<Resource<T>, RenderError>
-        // We use as_ref() to borrow, then ok() to get the Resource reference
-        if let Some(resource) = queues_resource.as_ref().ok() {
-            if let Some(Some(q)) = resource.value().cloned() {
-                queues.set(q);
-            }
+        if queues_initialized() {
+            return;
+        }
+
+        if let Some(Some(q)) = queues_resource_sync.read().as_ref() {
+            queues.set(q.clone());
+            queues_initialized.set(true);
         }
     });
 
@@ -87,7 +88,8 @@ pub fn AdminDashboard() -> Element {
         let job_id = job.id.to_string();
         let queue = selected_queue().clone();
         spawn(async move {
-            if let Err(e) = api::cancel_job(job_id, Some("Cancelled from admin".to_string())).await {
+            if let Err(e) = api::cancel_job(job_id, Some("Cancelled from admin".to_string())).await
+            {
                 error.set(Some(format!("Failed to cancel job: {}", e)));
             } else if let Some(q) = queue {
                 // Refresh jobs
@@ -157,7 +159,7 @@ pub fn AdminDashboard() -> Element {
                                 jobs: jobs(),
                                 loading: loading_jobs(),
                                 on_select: on_job_select,
-                                on_cancel: on_job_cancel.clone(),
+                                on_cancel: on_job_cancel,
                             }
                         }
                     } else {
@@ -172,7 +174,7 @@ pub fn AdminDashboard() -> Element {
                         JobDetail {
                             job: job.clone(),
                             on_close: move |_| selected_job.set(None),
-                            on_cancel: on_job_cancel.clone(),
+                            on_cancel: on_job_cancel,
                             on_retry: move |_job: Job| {
                                 // TODO: Implement retry API
                             },

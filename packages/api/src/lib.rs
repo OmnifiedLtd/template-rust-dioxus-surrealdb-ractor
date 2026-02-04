@@ -28,4 +28,6 @@ pub use init::*;
 pub use realtime::*;
 
 // Re-export core types for convenience
-pub use queue_core::{Job, JobId, JobStatus, Priority, Queue, QueueId, QueueState, QueueStats, JobEvent};
+pub use queue_core::{
+    Job, JobEvent, JobId, JobStatus, Priority, Queue, QueueId, QueueState, QueueStats,
+};

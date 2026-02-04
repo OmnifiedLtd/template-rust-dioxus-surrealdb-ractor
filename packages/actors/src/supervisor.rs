@@ -48,6 +48,39 @@ impl SupervisorState {
     }
 }
 
+async fn spawn_queue_actor(
+    myself: ActorRef<SupervisorMessage>,
+    state: &mut SupervisorState,
+    queue: Queue,
+) -> Result<ActorRef<QueueMessage>, ActorProcessingErr> {
+    let queue_state = QueueActorState::new(queue.clone())
+        .with_supervisor(myself.clone())
+        .with_event_tx(state.event_tx.clone());
+
+    let (actor, _handle) =
+        Actor::spawn(Some(format!("queue-{}", queue.id)), QueueActor, queue_state)
+            .await
+            .map_err(|e| ActorProcessingErr::from(format!("Failed to spawn queue: {}", e)))?;
+
+    for _ in 0..queue.config.concurrency {
+        let worker_id = state.next_worker_id();
+        let args = WorkerArgs {
+            worker_id,
+            queue_id: queue.id,
+            queue: actor.clone(),
+            handlers: state.handlers.clone(),
+            event_tx: Some(state.event_tx.clone()),
+        };
+
+        Actor::spawn(None, WorkerActor, args).await.ok();
+    }
+
+    state.queues.insert(queue.id, actor.clone());
+    state.queue_info.insert(queue.id, queue);
+
+    Ok(actor)
+}
+
 /// Supervisor actor that manages all queues.
 pub struct Supervisor;
 
@@ -85,7 +118,11 @@ impl Actor for Supervisor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            SupervisorMessage::CreateQueue { name, description, reply } => {
+            SupervisorMessage::CreateQueue {
+                name,
+                description,
+                reply,
+            } => {
                 // Check if queue already exists
                 if state.queue_info.values().any(|q| q.name == name) {
                     let _ = reply.send(Err(format!("Queue '{}' already exists", name)));
@@ -106,34 +143,10 @@ impl Actor for Supervisor {
                     }
                 }
 
-                // Create queue actor
-                let queue_state = QueueActorState::new(queue.clone())
-                    .with_supervisor(myself.clone())
-                    .with_event_tx(state.event_tx.clone());
-
-                let (actor, _handle) = Actor::spawn(
-                    Some(format!("queue-{}", queue.id)),
-                    QueueActor,
-                    queue_state,
-                )
-                .await
-                .map_err(|e| ActorProcessingErr::from(format!("Failed to spawn queue: {}", e)))?;
-
-                // Spawn workers for this queue
-                for _ in 0..queue.config.concurrency {
-                    let worker_id = state.next_worker_id();
-                    let args = WorkerArgs {
-                        worker_id,
-                        queue: actor.clone(),
-                        handlers: state.handlers.clone(),
-                        event_tx: Some(state.event_tx.clone()),
-                    };
-
-                    Actor::spawn(None, WorkerActor, args).await.ok();
+                if let Err(e) = spawn_queue_actor(myself.clone(), state, queue.clone()).await {
+                    let _ = reply.send(Err(format!("Failed to spawn queue: {}", e)));
+                    return Ok(());
                 }
-
-                state.queues.insert(queue.id, actor);
-                state.queue_info.insert(queue.id, queue.clone());
 
                 // Broadcast event
                 let _ = state.event_tx.send(JobEvent::QueueCreated {
@@ -144,14 +157,32 @@ impl Actor for Supervisor {
                 let _ = reply.send(Ok(queue));
             }
 
+            SupervisorMessage::RegisterQueue { queue, reply } => {
+                if state.queues.contains_key(&queue.id)
+                    || state.queue_info.values().any(|q| q.name == queue.name)
+                {
+                    let _ = reply.send(Err("Queue already registered".into()));
+                    return Ok(());
+                }
+
+                if let Err(e) = spawn_queue_actor(myself.clone(), state, queue.clone()).await {
+                    let _ = reply.send(Err(format!("Failed to spawn queue: {}", e)));
+                    return Ok(());
+                }
+
+                let _ = reply.send(Ok(queue));
+            }
+
             SupervisorMessage::GetQueue { queue_id, reply } => {
                 if let Some(queue_ref) = state.queues.get(&queue_id) {
                     let (tx, rx) = ractor::concurrency::oneshot();
-                    if queue_ref.send_message(QueueMessage::GetInfo { reply: tx.into() }).is_ok() {
-                        if let Ok(queue) = rx.await {
-                            let _ = reply.send(Some(queue));
-                            return Ok(());
-                        }
+                    if queue_ref
+                        .send_message(QueueMessage::GetInfo { reply: tx.into() })
+                        .is_ok()
+                        && let Ok(queue) = rx.await
+                    {
+                        let _ = reply.send(Some(queue));
+                        return Ok(());
                     }
                 }
                 let _ = reply.send(None);
@@ -159,15 +190,17 @@ impl Actor for Supervisor {
 
             SupervisorMessage::GetQueueByName { name, reply } => {
                 for (id, info) in &state.queue_info {
-                    if info.name == name {
-                        if let Some(queue_ref) = state.queues.get(id) {
-                            let (tx, rx) = ractor::concurrency::oneshot();
-                            if queue_ref.send_message(QueueMessage::GetInfo { reply: tx.into() }).is_ok() {
-                                if let Ok(queue) = rx.await {
-                                    let _ = reply.send(Some(queue));
-                                    return Ok(());
-                                }
-                            }
+                    if info.name == name
+                        && let Some(queue_ref) = state.queues.get(id)
+                    {
+                        let (tx, rx) = ractor::concurrency::oneshot();
+                        if queue_ref
+                            .send_message(QueueMessage::GetInfo { reply: tx.into() })
+                            .is_ok()
+                            && let Ok(queue) = rx.await
+                        {
+                            let _ = reply.send(Some(queue));
+                            return Ok(());
                         }
                     }
                 }
@@ -178,10 +211,12 @@ impl Actor for Supervisor {
                 let mut queues = Vec::new();
                 for queue_ref in state.queues.values() {
                     let (tx, rx) = ractor::concurrency::oneshot();
-                    if queue_ref.send_message(QueueMessage::GetInfo { reply: tx.into() }).is_ok() {
-                        if let Ok(queue) = rx.await {
-                            queues.push(queue);
-                        }
+                    if queue_ref
+                        .send_message(QueueMessage::GetInfo { reply: tx.into() })
+                        .is_ok()
+                        && let Ok(queue) = rx.await
+                    {
+                        queues.push(queue);
                     }
                 }
                 let _ = reply.send(queues);
@@ -226,10 +261,17 @@ impl Actor for Supervisor {
                 }
             }
 
-            SupervisorMessage::EnqueueJob { queue_id, job, reply } => {
+            SupervisorMessage::EnqueueJob {
+                queue_id,
+                job,
+                reply,
+            } => {
                 if let Some(queue_ref) = state.queues.get(&queue_id) {
                     let (tx, rx) = ractor::concurrency::oneshot();
-                    queue_ref.send_message(QueueMessage::Enqueue { job, reply: tx.into() })?;
+                    queue_ref.send_message(QueueMessage::Enqueue {
+                        job: Box::new(job),
+                        reply: tx.into(),
+                    })?;
                     match rx.await {
                         Ok(result) => {
                             let _ = reply.send(result);
@@ -246,17 +288,26 @@ impl Actor for Supervisor {
             SupervisorMessage::GetJob { job_id, reply } => {
                 for queue_ref in state.queues.values() {
                     let (tx, rx) = ractor::concurrency::oneshot();
-                    if queue_ref.send_message(QueueMessage::GetJob { job_id, reply: tx.into() }).is_ok() {
-                        if let Ok(Some(job)) = rx.await {
-                            let _ = reply.send(Some(job));
-                            return Ok(());
-                        }
+                    if queue_ref
+                        .send_message(QueueMessage::GetJob {
+                            job_id,
+                            reply: tx.into(),
+                        })
+                        .is_ok()
+                        && let Ok(Some(job)) = rx.await
+                    {
+                        let _ = reply.send(Some(job));
+                        return Ok(());
                     }
                 }
                 let _ = reply.send(None);
             }
 
-            SupervisorMessage::CancelJob { job_id, reason, reply } => {
+            SupervisorMessage::CancelJob {
+                job_id,
+                reason,
+                reply,
+            } => {
                 for queue_ref in state.queues.values() {
                     let (tx, rx) = ractor::concurrency::oneshot();
                     if queue_ref
@@ -266,11 +317,10 @@ impl Actor for Supervisor {
                             reply: tx.into(),
                         })
                         .is_ok()
+                        && let Ok(Ok(())) = rx.await
                     {
-                        if let Ok(Ok(())) = rx.await {
-                            let _ = reply.send(Ok(()));
-                            return Ok(());
-                        }
+                        let _ = reply.send(Ok(()));
+                        return Ok(());
                     }
                 }
                 let _ = reply.send(Err("Job not found".into()));
@@ -316,16 +366,13 @@ impl Actor for Supervisor {
         message: SupervisionEvent,
         _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        match message {
-            SupervisionEvent::ActorTerminated(cell, _, reason) => {
-                tracing::warn!(
-                    "Child actor {} terminated: {:?}",
-                    cell.get_name().unwrap_or_default(),
-                    reason
-                );
-                // TODO: Restart logic if needed
-            }
-            _ => {}
+        if let SupervisionEvent::ActorTerminated(cell, _, reason) = message {
+            tracing::warn!(
+                "Child actor {} terminated: {:?}",
+                cell.get_name().unwrap_or_default(),
+                reason
+            );
+            // TODO: Restart logic if needed
         }
         Ok(())
     }
@@ -335,7 +382,8 @@ impl Actor for Supervisor {
 pub async fn start_supervisor(
     handlers: JobHandlerRegistry,
 ) -> Result<(ActorRef<SupervisorMessage>, tokio::task::JoinHandle<()>), ractor::SpawnErr> {
-    let (actor, handle) = Actor::spawn(Some("supervisor".to_string()), Supervisor, handlers).await?;
+    let (actor, handle) =
+        Actor::spawn(Some("supervisor".to_string()), Supervisor, handlers).await?;
 
     Ok((actor, handle))
 }

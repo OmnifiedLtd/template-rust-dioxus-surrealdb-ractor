@@ -1,14 +1,41 @@
 //! Server initialization for the job queue system.
 
-use actors::{JobHandlerRegistry, start_supervisor, FnHandler};
 use actors::global_registry;
-use queue_core::{Job, JobResult};
+use actors::{FnHandler, JobHandlerRegistry, start_supervisor};
 use db::{DbConfig, init as init_db};
+use queue_core::{Job, JobResult};
+use tokio::sync::OnceCell;
+
+/// Global initialization cell - ensures init happens exactly once.
+static INIT: OnceCell<Result<(), String>> = OnceCell::const_new();
+
+/// Ensure the job queue system is initialized.
+///
+/// This can be called from any API endpoint - it will initialize on first call
+/// and return immediately on subsequent calls.
+pub async fn ensure_initialized() -> Result<(), String> {
+    INIT.get_or_init(|| async {
+        match init_job_queue_inner().await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::error!("Failed to initialize job queue: {}", e);
+                Err(e.to_string())
+            }
+        }
+    })
+    .await
+    .clone()
+}
 
 /// Initialize the job queue system.
 ///
 /// This should be called once at server startup before handling requests.
 pub async fn init_job_queue() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_initialized().await.map_err(|e| e.into())
+}
+
+/// Internal initialization logic.
+async fn init_job_queue_inner() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Initializing job queue system...");
 
     // Initialize database
@@ -31,16 +58,15 @@ pub async fn init_job_queue() -> Result<(), Box<dyn std::error::Error>> {
         Box::pin(async move {
             tracing::info!("Echo job: {:?}", payload);
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            Ok(JobResult::with_output(
-                "Echo completed",
-                payload,
-            ))
+            Ok(JobResult::with_output("Echo completed", payload))
         })
     }));
 
     // Demo: Sleep handler
     handlers.register(FnHandler::new("sleep", |job: &Job| {
-        let seconds = job.payload.get("seconds")
+        let seconds = job
+            .payload
+            .get("seconds")
             .and_then(|v| v.as_u64())
             .unwrap_or(5);
         Box::pin(async move {
@@ -52,7 +78,9 @@ pub async fn init_job_queue() -> Result<(), Box<dyn std::error::Error>> {
 
     // Demo: Failing handler (for testing retries)
     handlers.register(FnHandler::new("fail", |job: &Job| {
-        let should_fail = job.payload.get("fail")
+        let should_fail = job
+            .payload
+            .get("fail")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         Box::pin(async move {
@@ -70,8 +98,10 @@ pub async fn init_job_queue() -> Result<(), Box<dyn std::error::Error>> {
     // Register globally
     global_registry().register_supervisor(supervisor.clone());
 
-    // Create a default "demo" queue if none exist
-    let queues = db::repositories::QueueRepository::list().await.unwrap_or_default();
+    // Rehydrate queues from persistence (or create demo queue if none exist)
+    let queues = db::repositories::QueueRepository::list()
+        .await
+        .unwrap_or_default();
     if queues.is_empty() {
         tracing::info!("Creating demo queue...");
         let (tx, rx) = actors::concurrency::oneshot();
@@ -85,6 +115,28 @@ pub async fn init_job_queue() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Ok(queue)) => tracing::info!("Created demo queue: {}", queue.id),
             Ok(Err(e)) => tracing::warn!("Failed to create demo queue: {}", e),
             Err(_) => tracing::warn!("Timeout creating demo queue"),
+        }
+    } else {
+        for queue in queues {
+            let (tx, rx) = actors::concurrency::oneshot();
+            if supervisor
+                .send_message(actors::SupervisorMessage::RegisterQueue {
+                    queue: queue.clone(),
+                    reply: tx.into(),
+                })
+                .is_err()
+            {
+                tracing::warn!("Failed to register queue {}", queue.id);
+                continue;
+            }
+
+            match rx.await {
+                Ok(Ok(_)) => {
+                    tracing::info!("Registered queue: {}", queue.id);
+                }
+                Ok(Err(e)) => tracing::warn!("Failed to register queue {}: {}", queue.id, e),
+                Err(_) => tracing::warn!("Timeout registering queue {}", queue.id),
+            }
         }
     }
 
