@@ -4,7 +4,7 @@
 use dioxus::prelude::*;
 
 use ui::Navbar;
-use ui::admin::AdminDashboard;
+use ui::admin::{AdminJobDetailPage, AdminQueueDetailPage, AdminQueuesPage};
 use views::{Blog, Home};
 
 mod views;
@@ -19,10 +19,16 @@ enum Route {
         #[route("/blog/:id")]
         Blog { id: i32 },
 
-    // Admin routes (no navbar)
+    // Admin routes with sidebar navigation
     #[layout(AdminLayout)]
         #[route("/admin")]
-        Admin {},
+        AdminRedirect {},
+        #[route("/admin/queues")]
+        AdminQueues {},
+        #[route("/admin/queues/:queue_id")]
+        AdminQueueDetail { queue_id: String },
+        #[route("/admin/queues/:queue_id/jobs/:job_id")]
+        AdminJobDetail { queue_id: String, job_id: String },
 }
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
@@ -69,7 +75,7 @@ fn WebNavbar() -> Element {
                 "Blog"
             }
             Link {
-                to: Route::Admin {},
+                to: Route::AdminQueues {},
                 "Admin"
             }
         }
@@ -78,18 +84,76 @@ fn WebNavbar() -> Element {
     }
 }
 
-/// Layout for admin routes (no navigation, full-width).
+/// Layout for admin routes with sidebar navigation.
 #[component]
 fn AdminLayout() -> Element {
     rsx! {
-        Outlet::<Route> {}
+        div { class: "admin-layout",
+            // Sidebar navigation
+            aside { class: "admin-sidebar",
+                div { class: "sidebar-header",
+                    h1 { class: "sidebar-logo", "Job Queue" }
+                }
+                nav { class: "sidebar-nav",
+                    div { class: "nav-section",
+                        span { class: "nav-section-title", "Menu" }
+                        Link {
+                            to: Route::AdminQueues {},
+                            class: "nav-link",
+                            active_class: "active",
+                            span { class: "nav-icon", "▦" }
+                            span { "Queues" }
+                        }
+                    }
+                }
+                div { class: "sidebar-footer",
+                    Link {
+                        to: Route::Home {},
+                        class: "nav-link nav-link-muted",
+                        span { class: "nav-icon", "←" }
+                        span { "Back to Site" }
+                    }
+                }
+            }
+
+            // Main content area
+            main { class: "admin-main",
+                Outlet::<Route> {}
+            }
+        }
     }
 }
 
-/// Admin dashboard page.
+/// Redirect /admin to /admin/queues.
 #[component]
-fn Admin() -> Element {
+fn AdminRedirect() -> Element {
+    let nav = use_navigator();
+    use_effect(move || {
+        nav.push(Route::AdminQueues {});
+    });
+    rsx! {}
+}
+
+/// Queues list page.
+#[component]
+fn AdminQueues() -> Element {
     rsx! {
-        AdminDashboard {}
+        AdminQueuesPage {}
+    }
+}
+
+/// Queue detail page.
+#[component]
+fn AdminQueueDetail(queue_id: String) -> Element {
+    rsx! {
+        AdminQueueDetailPage { queue_id }
+    }
+}
+
+/// Job detail page.
+#[component]
+fn AdminJobDetail(queue_id: String, job_id: String) -> Element {
+    rsx! {
+        AdminJobDetailPage { queue_id, job_id }
     }
 }
