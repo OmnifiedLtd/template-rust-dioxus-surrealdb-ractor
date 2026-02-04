@@ -5,6 +5,9 @@ use queue_core::{Job, JobStatus, Queue};
 
 use crate::admin::StatusBadge;
 
+/// Refresh interval in milliseconds (5 seconds).
+const REFRESH_INTERVAL_MS: u32 = 5000;
+
 /// Props for AdminJobDetailPage.
 #[derive(Props, Clone, PartialEq)]
 pub struct AdminJobDetailPageProps {
@@ -20,49 +23,52 @@ pub fn AdminJobDetailPage(props: AdminJobDetailPageProps) -> Element {
 
     let mut queue = use_signal(|| None::<Queue>);
     let mut job = use_signal(|| None::<Job>);
-    let mut loading = use_signal(|| true);
     let mut error = use_signal(|| None::<String>);
 
-    // Load job and queue
+    // Auto-refresh: fetch job every 5 seconds
     let qid = queue_id.clone();
     let jid = job_id.clone();
-    let _job_resource = use_resource(move || {
+    let _refresh = use_coroutine(move |_rx: UnboundedReceiver<()>| {
         let qid = qid.clone();
         let jid = jid.clone();
         async move {
-            loading.set(true);
+            loop {
+                // Load queue details for breadcrumb
+                if let Ok(queues) = api::list_queues().await
+                    && let Some(q) = queues.into_iter().find(|q| q.id.to_string() == qid)
+                {
+                    queue.set(Some(q));
+                }
 
-            // Load queue details for breadcrumb
-            if let Ok(queues) = api::list_queues().await
-                && let Some(q) = queues.into_iter().find(|q| q.id.to_string() == qid)
-            {
-                queue.set(Some(q));
+                // Load job
+                if let Ok(Some(j)) = api::get_job(jid.clone()).await {
+                    job.set(Some(j));
+                }
+
+                // Wait before next refresh
+                #[cfg(target_arch = "wasm32")]
+                gloo_timers::future::TimeoutFuture::new(REFRESH_INTERVAL_MS).await;
+
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::time::sleep(std::time::Duration::from_millis(REFRESH_INTERVAL_MS as u64))
+                    .await;
             }
-
-            // Load job
-            if let Ok(Some(j)) = api::get_job(jid).await {
-                job.set(Some(j));
-            }
-
-            loading.set(false);
         }
     });
 
     // Cancel job handler
-    let on_cancel = {
-        let jid = job_id.clone();
-        move |_| {
-            let jid = jid.clone();
-            spawn(async move {
-                if let Err(e) =
-                    api::cancel_job(jid.clone(), Some("Cancelled from admin".to_string())).await
-                {
-                    error.set(Some(format!("Failed to cancel job: {}", e)));
-                } else if let Ok(Some(j)) = api::get_job(jid).await {
-                    job.set(Some(j));
-                }
-            });
-        }
+    let job_id_for_cancel = job_id.clone();
+    let on_cancel = move |_| {
+        let jid = job_id_for_cancel.clone();
+        spawn(async move {
+            if let Err(e) =
+                api::cancel_job(jid.clone(), Some("Cancelled from admin".to_string())).await
+            {
+                error.set(Some(format!("Failed to cancel job: {}", e)));
+            } else if let Ok(Some(j)) = api::get_job(jid).await {
+                job.set(Some(j));
+            }
+        });
     };
 
     rsx! {
@@ -91,9 +97,7 @@ pub fn AdminJobDetailPage(props: AdminJobDetailPageProps) -> Element {
                 }
             }
 
-            if loading() {
-                div { class: "loading", "Loading job..." }
-            } else if let Some(j) = job() {
+            if let Some(j) = job() {
                 {
                     let status_str = j.status.as_str().to_string();
                     let can_cancel = !j.status.is_terminal();
@@ -130,6 +134,7 @@ pub fn AdminJobDetailPage(props: AdminJobDetailPageProps) -> Element {
                                 div { class: "page-header-title-row",
                                     h1 { class: "page-title", "Job Details" }
                                     StatusBadge { status: status_str.clone() }
+                                    span { class: "auto-refresh-indicator", "Auto-refreshing" }
                                 }
                                 p { class: "page-description job-id-display", "{j.id}" }
                             }
@@ -226,13 +231,7 @@ pub fn AdminJobDetailPage(props: AdminJobDetailPageProps) -> Element {
                     }
                 }
             } else {
-                div { class: "empty-state",
-                    div { class: "empty-state-icon", "❌" }
-                    p { "Job not found" }
-                    Link { to: "/admin/queues/{queue_id}", class: "btn btn-secondary",
-                        "Back to Queue"
-                    }
-                }
+                div { class: "loading", "Loading job..." }
             }
         }
     }

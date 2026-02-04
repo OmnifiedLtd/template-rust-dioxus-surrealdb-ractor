@@ -5,23 +5,32 @@ use queue_core::{Queue, QueueState};
 
 use crate::admin::StateBadge;
 
+/// Refresh interval in milliseconds (5 seconds).
+const REFRESH_INTERVAL_MS: u32 = 5000;
+
 /// Queues list page component.
 #[component]
 pub fn AdminQueuesPage() -> Element {
     let mut queues = use_signal(Vec::<Queue>::new);
     let mut error = use_signal(|| None::<String>);
-    let mut initialized = use_signal(|| false);
 
-    // Load queues
-    let queues_resource = use_resource(move || async move { api::list_queues().await.ok() });
+    // Auto-refresh: fetch queues every 5 seconds
+    let _refresh = use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
+        loop {
+            // Fetch queues
+            match api::list_queues().await {
+                Ok(q) => queues.set(q),
+                Err(e) => {
+                    tracing::error!("Failed to fetch queues: {}", e);
+                }
+            }
 
-    use_effect(move || {
-        if initialized() {
-            return;
-        }
-        if let Some(Some(q)) = queues_resource.read().as_ref() {
-            queues.set(q.clone());
-            initialized.set(true);
+            // Wait before next refresh
+            #[cfg(target_arch = "wasm32")]
+            gloo_timers::future::TimeoutFuture::new(REFRESH_INTERVAL_MS).await;
+
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::time::sleep(std::time::Duration::from_millis(REFRESH_INTERVAL_MS as u64)).await;
         }
     });
 
@@ -56,6 +65,9 @@ pub fn AdminQueuesPage() -> Element {
                 div { class: "page-header-content",
                     h1 { class: "page-title", "Queues" }
                     p { class: "page-description", "Manage your job queues and monitor their status" }
+                }
+                div { class: "page-header-actions",
+                    span { class: "auto-refresh-indicator", "Auto-refreshing" }
                 }
             }
 

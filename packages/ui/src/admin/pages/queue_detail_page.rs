@@ -5,6 +5,9 @@ use queue_core::{Job, Queue, QueueState};
 
 use crate::admin::{CreateJobForm, StateBadge, StatusBadge};
 
+/// Refresh interval in milliseconds (5 seconds).
+const REFRESH_INTERVAL_MS: u32 = 5000;
+
 /// Props for AdminQueueDetailPage.
 #[derive(Props, Clone, PartialEq)]
 pub struct AdminQueueDetailPageProps {
@@ -17,86 +20,77 @@ pub fn AdminQueueDetailPage(props: AdminQueueDetailPageProps) -> Element {
     let queue_id = props.queue_id.clone();
     let mut queue = use_signal(|| None::<Queue>);
     let mut jobs = use_signal(Vec::<Job>::new);
-    let mut loading = use_signal(|| true);
     let mut show_create_form = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
 
-    // Load queue and jobs
-    let queue_id_for_resource = queue_id.clone();
-    let _queue_resource = use_resource(move || {
-        let qid = queue_id_for_resource.clone();
+    // Auto-refresh: fetch queue and jobs every 5 seconds
+    let queue_id_for_refresh = queue_id.clone();
+    let _refresh = use_coroutine(move |_rx: UnboundedReceiver<()>| {
+        let qid = queue_id_for_refresh.clone();
         async move {
-            loading.set(true);
+            loop {
+                // Load queue details
+                if let Ok(queues) = api::list_queues().await
+                    && let Some(q) = queues.into_iter().find(|q| q.id.to_string() == qid)
+                {
+                    queue.set(Some(q));
+                }
 
-            // Load queue details
-            if let Ok(queues) = api::list_queues().await
+                // Load jobs
+                if let Ok(j) = api::list_queue_jobs(qid.clone(), None, Some(100)).await {
+                    jobs.set(j);
+                }
+
+                // Wait before next refresh
+                #[cfg(target_arch = "wasm32")]
+                gloo_timers::future::TimeoutFuture::new(REFRESH_INTERVAL_MS).await;
+
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::time::sleep(std::time::Duration::from_millis(REFRESH_INTERVAL_MS as u64))
+                    .await;
+            }
+        }
+    });
+
+    // Job created handler - trigger immediate refresh
+    let queue_id_for_created = queue_id.clone();
+    let on_job_created = move |_| {
+        show_create_form.set(false);
+        let qid = queue_id_for_created.clone();
+        spawn(async move {
+            if let Ok(j) = api::list_queue_jobs(qid, None, Some(100)).await {
+                jobs.set(j);
+            }
+        });
+    };
+
+    // Pause/Resume handlers
+    let queue_id_for_pause = queue_id.clone();
+    let on_pause = move |_| {
+        let qid = queue_id_for_pause.clone();
+        spawn(async move {
+            if let Err(e) = api::pause_queue(qid.clone()).await {
+                error.set(Some(format!("Failed to pause queue: {}", e)));
+            } else if let Ok(queues) = api::list_queues().await
                 && let Some(q) = queues.into_iter().find(|q| q.id.to_string() == qid)
             {
                 queue.set(Some(q));
             }
+        });
+    };
 
-            // Load jobs
-            if let Ok(j) = api::list_queue_jobs(qid, None, Some(100)).await {
-                jobs.set(j);
+    let queue_id_for_resume = queue_id.clone();
+    let on_resume = move |_| {
+        let qid = queue_id_for_resume.clone();
+        spawn(async move {
+            if let Err(e) = api::resume_queue(qid.clone()).await {
+                error.set(Some(format!("Failed to resume queue: {}", e)));
+            } else if let Ok(queues) = api::list_queues().await
+                && let Some(q) = queues.into_iter().find(|q| q.id.to_string() == qid)
+            {
+                queue.set(Some(q));
             }
-
-            loading.set(false);
-        }
-    });
-
-    // Refresh jobs
-    let refresh_jobs = {
-        let qid = queue_id.clone();
-        move || {
-            let qid = qid.clone();
-            spawn(async move {
-                if let Ok(j) = api::list_queue_jobs(qid, None, Some(100)).await {
-                    jobs.set(j);
-                }
-            });
-        }
-    };
-
-    // Job created handler
-    let on_job_created = {
-        let refresh = refresh_jobs.clone();
-        move |_| {
-            show_create_form.set(false);
-            refresh();
-        }
-    };
-
-    // Pause/Resume handlers
-    let on_pause = {
-        let qid = queue_id.clone();
-        move |_| {
-            let qid = qid.clone();
-            spawn(async move {
-                if let Err(e) = api::pause_queue(qid.clone()).await {
-                    error.set(Some(format!("Failed to pause queue: {}", e)));
-                } else if let Ok(queues) = api::list_queues().await
-                    && let Some(q) = queues.into_iter().find(|q| q.id.to_string() == qid)
-                {
-                    queue.set(Some(q));
-                }
-            });
-        }
-    };
-
-    let on_resume = {
-        let qid = queue_id.clone();
-        move |_| {
-            let qid = qid.clone();
-            spawn(async move {
-                if let Err(e) = api::resume_queue(qid.clone()).await {
-                    error.set(Some(format!("Failed to resume queue: {}", e)));
-                } else if let Ok(queues) = api::list_queues().await
-                    && let Some(q) = queues.into_iter().find(|q| q.id.to_string() == qid)
-                {
-                    queue.set(Some(q));
-                }
-            });
-        }
+        });
     };
 
     rsx! {
@@ -121,15 +115,14 @@ pub fn AdminQueueDetailPage(props: AdminQueueDetailPageProps) -> Element {
                 }
             }
 
-            if loading() {
-                div { class: "loading", "Loading queue..." }
-            } else if let Some(q) = queue() {
+            if let Some(q) = queue() {
                 // Page header
                 div { class: "page-header",
                     div { class: "page-header-content",
                         div { class: "page-header-title-row",
                             h1 { class: "page-title", "{q.name}" }
                             StateBadge { state: q.state }
+                            span { class: "auto-refresh-indicator", "Auto-refreshing" }
                         }
                         if let Some(ref desc) = q.description {
                             p { class: "page-description", "{desc}" }
@@ -267,9 +260,7 @@ pub fn AdminQueueDetailPage(props: AdminQueueDetailPageProps) -> Element {
                     }
                 }
             } else {
-                div { class: "empty-state",
-                    p { "Queue not found" }
-                }
+                div { class: "loading", "Loading queue..." }
             }
         }
     }
