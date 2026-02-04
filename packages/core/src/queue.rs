@@ -34,10 +34,11 @@ impl std::fmt::Display for QueueId {
 }
 
 /// Current operational state of a queue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueState {
     /// Queue is active and processing jobs.
+    #[default]
     Running,
     /// Queue is paused, no new jobs will be processed.
     Paused,
@@ -45,12 +46,6 @@ pub enum QueueState {
     Draining,
     /// Queue is stopped and not processing.
     Stopped,
-}
-
-impl Default for QueueState {
-    fn default() -> Self {
-        Self::Running
-    }
 }
 
 impl std::fmt::Display for QueueState {

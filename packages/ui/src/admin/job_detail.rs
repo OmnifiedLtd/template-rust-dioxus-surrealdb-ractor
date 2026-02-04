@@ -36,27 +36,51 @@ pub fn JobDetail(props: JobDetailProps) -> Element {
 
     // Extract status details
     let status_details = match &job.status {
-        JobStatus::Running { started_at, worker_id } => {
-            Some(format!("Started at {} by {}", started_at.format("%H:%M:%S"), worker_id))
-        }
-        JobStatus::Completed { started_at, completed_at, result } => {
+        JobStatus::Running {
+            started_at,
+            worker_id,
+        } => Some(format!(
+            "Started at {} by {}",
+            started_at.format("%H:%M:%S"),
+            worker_id
+        )),
+        JobStatus::Completed {
+            started_at,
+            completed_at,
+            result,
+        } => {
             let duration = (*completed_at - *started_at).num_seconds();
             Some(format!("Completed in {}s: {}", duration, result.summary))
         }
-        JobStatus::Failed { started_at, failed_at, error, attempts } => {
+        JobStatus::Failed {
+            started_at,
+            failed_at,
+            error,
+            attempts,
+        } => {
             let duration = (*failed_at - *started_at).num_seconds();
-            Some(format!("Failed after {}s (attempt {}): {}", duration, attempts, error))
+            Some(format!(
+                "Failed after {}s (attempt {}): {}",
+                duration, attempts, error
+            ))
         }
-        JobStatus::Cancelled { cancelled_at, reason } => {
+        JobStatus::Cancelled {
+            cancelled_at,
+            reason,
+        } => {
             let reason_str = reason.as_deref().unwrap_or("No reason");
-            Some(format!("Cancelled at {}: {}", cancelled_at.format("%H:%M:%S"), reason_str))
+            Some(format!(
+                "Cancelled at {}: {}",
+                cancelled_at.format("%H:%M:%S"),
+                reason_str
+            ))
         }
         _ => None,
     };
 
     // Format payload
-    let payload_json = serde_json::to_string_pretty(&job.payload)
-        .unwrap_or_else(|_| "{}".to_string());
+    let payload_json =
+        serde_json::to_string_pretty(&job.payload).unwrap_or_else(|_| "{}".to_string());
 
     rsx! {
         div { class: "job-detail-panel",

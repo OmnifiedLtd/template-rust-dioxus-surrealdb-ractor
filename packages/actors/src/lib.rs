@@ -21,21 +21,21 @@
 //! supervisor.send_message(SupervisorMessage::CreateQueue { ... })?;
 //! ```
 
-mod messages;
-mod queue_actor;
-mod worker_actor;
-mod supervisor;
-mod persistence;
-pub mod registry;
 mod handler;
+mod messages;
+mod persistence;
+mod queue_actor;
+pub mod registry;
+mod supervisor;
+mod worker_actor;
 
-pub use messages::{QueueMessage, WorkerMessage, SupervisorMessage};
-pub use queue_actor::QueueActor;
-pub use worker_actor::WorkerActor;
-pub use supervisor::{Supervisor, start_supervisor};
+pub use handler::{FnHandler, HandlerResult, JobHandler, JobHandlerRegistry};
+pub use messages::{QueueMessage, SupervisorMessage, WorkerMessage};
 pub use persistence::StatePersistence;
+pub use queue_actor::QueueActor;
 pub use registry::{ActorRegistry, global_registry};
-pub use handler::{JobHandler, JobHandlerRegistry, HandlerResult, FnHandler};
+pub use supervisor::{Supervisor, start_supervisor};
+pub use worker_actor::WorkerActor;
 
 /// Re-export ractor types for convenience.
 pub use ractor::{Actor, ActorRef, RpcReplyPort, concurrency};

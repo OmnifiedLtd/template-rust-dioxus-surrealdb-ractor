@@ -1,3 +1,6 @@
+// Dioxus `rsx!` macro expands to unwraps internally; allow to avoid false positives.
+#![allow(clippy::disallowed_methods)]
+
 use dioxus::prelude::*;
 
 use ui::Navbar;

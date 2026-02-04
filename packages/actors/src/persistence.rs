@@ -1,7 +1,7 @@
 //! File-based state persistence for actors.
 
+use serde::{Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
-use serde::{de::DeserializeOwned, Serialize};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -50,7 +50,10 @@ impl StatePersistence {
     }
 
     /// Load state from a file.
-    pub async fn load<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>, PersistenceError> {
+    pub async fn load<T: DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> Result<Option<T>, PersistenceError> {
         let path = self.base_dir.join(format!("{}.json", name));
 
         if !path.exists() {
@@ -91,10 +94,10 @@ impl StatePersistence {
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "json") {
-                if let Some(stem) = path.file_stem() {
-                    names.push(stem.to_string_lossy().to_string());
-                }
+            if path.extension().is_some_and(|e| e == "json")
+                && let Some(stem) = path.file_stem()
+            {
+                names.push(stem.to_string_lossy().to_string());
             }
         }
 

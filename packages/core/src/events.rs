@@ -36,10 +36,7 @@ pub enum JobEvent {
 
     // Job events
     /// A new job was enqueued.
-    JobEnqueued {
-        job: Job,
-        timestamp: DateTime<Utc>,
-    },
+    JobEnqueued { job: Job, timestamp: DateTime<Utc> },
     /// A job started executing.
     JobStarted {
         job_id: JobId,
@@ -173,7 +170,9 @@ impl JobEvent {
                 queue_id,
                 ..
             } => format!("Queue {} -> {}", queue_id, new_state),
-            JobEvent::QueueStatsUpdated { queue_id, stats, .. } => {
+            JobEvent::QueueStatsUpdated {
+                queue_id, stats, ..
+            } => {
                 format!("Queue {} stats: {} pending", queue_id, stats.pending)
             }
             JobEvent::QueueDeleted { queue_id, .. } => format!("Queue {} deleted", queue_id),
@@ -202,7 +201,9 @@ impl JobEvent {
                 let reason = reason.as_deref().unwrap_or("no reason");
                 format!("Job {} cancelled: {}", job_id, reason)
             }
-            JobEvent::JobRetrying { job_id, attempt, .. } => {
+            JobEvent::JobRetrying {
+                job_id, attempt, ..
+            } => {
                 format!("Job {} retrying (attempt {})", job_id, attempt)
             }
             JobEvent::WorkerConnected {
@@ -215,7 +216,9 @@ impl JobEvent {
                 queue_id,
                 ..
             } => format!("Worker {} disconnected from {}", worker_id, queue_id),
-            JobEvent::WorkerHeartbeat { worker_id, .. } => format!("Worker {} heartbeat", worker_id),
+            JobEvent::WorkerHeartbeat { worker_id, .. } => {
+                format!("Worker {} heartbeat", worker_id)
+            }
         }
     }
 }

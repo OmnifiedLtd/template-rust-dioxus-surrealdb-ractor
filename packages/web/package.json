@@ -4,6 +4,8 @@
   "description": "The web crate defines the entrypoint for the web app along with any assets, components and dependencies that are specific to web builds. The web crate starts out something like this:",
   "main": "index.js",
   "scripts": {
+    "e2e": "playwright test",
+    "e2e:install": "playwright install --with-deps chromium",
     "tailwind": "npx @tailwindcss/cli -i ./input.css -o ./assets/tailwind.css",
     "tailwind:watch": "npx @tailwindcss/cli -i ./input.css -o ./assets/tailwind.css --watch"
   },
@@ -14,5 +16,8 @@
   "dependencies": {
     "@tailwindcss/cli": "^4.1.18",
     "tailwindcss": "^4.1.18"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.1"
   }
 }

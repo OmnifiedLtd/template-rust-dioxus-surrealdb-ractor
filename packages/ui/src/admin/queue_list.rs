@@ -40,10 +40,12 @@ pub fn QueueList(props: QueueListProps) -> Element {
                     QueueCard {
                         key: "{queue.id}",
                         queue: queue.clone(),
-                        selected: selected_id.as_ref().map_or(false, |id| id == &queue.id.to_string()),
-                        on_select: props.on_select.clone(),
-                        on_pause: props.on_pause.clone(),
-                        on_resume: props.on_resume.clone(),
+                        selected: selected_id
+                            .as_ref()
+                            .is_some_and(|id| id == &queue.id.to_string()),
+                        on_select: props.on_select,
+                        on_pause: props.on_pause,
+                        on_resume: props.on_resume,
                     }
                 }
             }

@@ -8,13 +8,15 @@ use queue_core::{Job, JobEvent, QueueId};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use tokio::sync::broadcast;
 
-use crate::handler::{JobHandler, JobHandlerRegistry};
+use crate::handler::JobHandlerRegistry;
 use crate::messages::{QueueMessage, WorkerMessage};
 
 /// State for the worker actor.
 pub struct WorkerActorState {
     /// Unique worker ID.
     pub worker_id: String,
+    /// Queue ID this worker is attached to.
+    pub queue_id: QueueId,
     /// Current job being processed.
     pub current_job: Option<Job>,
     /// Queue actor reference.
@@ -31,11 +33,13 @@ impl WorkerActorState {
     /// Create a new worker actor state.
     pub fn new(
         worker_id: impl Into<String>,
+        queue_id: QueueId,
         queue: ActorRef<QueueMessage>,
         handlers: Arc<JobHandlerRegistry>,
     ) -> Self {
         Self {
             worker_id: worker_id.into(),
+            queue_id,
             current_job: None,
             queue,
             handlers,
@@ -59,6 +63,7 @@ impl WorkerActorState {
 /// Worker actor arguments.
 pub struct WorkerArgs {
     pub worker_id: String,
+    pub queue_id: QueueId,
     pub queue: ActorRef<QueueMessage>,
     pub handlers: Arc<JobHandlerRegistry>,
     pub event_tx: Option<broadcast::Sender<JobEvent>>,
@@ -79,7 +84,8 @@ impl Actor for WorkerActor {
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("Starting worker: {}", args.worker_id);
 
-        let mut state = WorkerActorState::new(args.worker_id, args.queue, args.handlers);
+        let mut state =
+            WorkerActorState::new(args.worker_id, args.queue_id, args.queue, args.handlers);
         if let Some(tx) = args.event_tx {
             state = state.with_event_tx(tx);
         }
@@ -106,12 +112,12 @@ impl Actor for WorkerActor {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             WorkerMessage::ProcessJob { job } => {
+                let job = *job;
                 state.current_job = Some(job.clone());
 
                 // Find handler for this job type
                 if let Some(handler) = state.handlers.get(&job.job_type) {
                     let job_id = job.id;
-                    let queue_id = job.queue_id;
                     let timeout = Duration::from_secs(job.timeout_secs);
 
                     // Execute with timeout
@@ -192,11 +198,12 @@ impl Actor for WorkerActor {
                             reply,
                         },
                         Some(timeout),
-                    ).await;
+                    )
+                    .await;
                     // ractor::rpc::call returns Result<CallResult<T>, MessagingErr<M>>
                     // CallResult can be Success(T), Timeout, or SenderError
                     if let Ok(ractor::rpc::CallResult::Success(Some(job))) = result {
-                        myself.send_message(WorkerMessage::ProcessJob { job })?;
+                        myself.send_message(WorkerMessage::ProcessJob { job: Box::new(job) })?;
                     }
                 }
 
@@ -204,10 +211,10 @@ impl Actor for WorkerActor {
                 if let Some(ref tx) = state.event_tx {
                     let _ = tx.send(JobEvent::WorkerHeartbeat {
                         worker_id: state.worker_id.clone(),
-                        queue_id: state.current_job.as_ref().map_or(
-                            QueueId::new(), // Placeholder
-                            |j| j.queue_id,
-                        ),
+                        queue_id: state
+                            .current_job
+                            .as_ref()
+                            .map_or(state.queue_id, |j| j.queue_id),
                         current_job: state.current_job.as_ref().map(|j| j.id),
                         timestamp: Utc::now(),
                     });

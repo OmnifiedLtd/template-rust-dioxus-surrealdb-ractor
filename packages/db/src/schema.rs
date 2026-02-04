@@ -1,12 +1,12 @@
 //! Database schema definitions using SurrealQL.
 
-use crate::{get_db, DbError};
+use crate::{DbError, get_db};
 
 /// Initialize the database schema.
 ///
 /// This creates all necessary tables, fields, and indexes.
 pub async fn init_schema() -> Result<(), DbError> {
-    let db = get_db();
+    let db = get_db()?;
 
     tracing::info!("Initializing database schema...");
 
@@ -39,6 +39,12 @@ DEFINE FIELD IF NOT EXISTS config.default_max_retries ON queue TYPE int DEFAULT 
 DEFINE FIELD IF NOT EXISTS config.max_queue_size ON queue TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS config.rate_limit ON queue TYPE option<float>;
 DEFINE FIELD IF NOT EXISTS stats ON queue TYPE object DEFAULT {};
+DEFINE FIELD IF NOT EXISTS stats.pending ON queue TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS stats.running ON queue TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS stats.completed ON queue TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS stats.failed ON queue TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS stats.avg_duration_ms ON queue TYPE option<float>;
+DEFINE FIELD IF NOT EXISTS stats.throughput_per_min ON queue TYPE option<float>;
 DEFINE FIELD IF NOT EXISTS created_at ON queue TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON queue TYPE datetime DEFAULT time::now();
 
@@ -55,11 +61,26 @@ DEFINE TABLE IF NOT EXISTS job SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS queue_id ON job TYPE string;
 DEFINE FIELD IF NOT EXISTS job_type ON job TYPE string;
 DEFINE FIELD IF NOT EXISTS payload ON job TYPE object;
+DEFINE FIELD IF NOT EXISTS payload.* ON job TYPE any;
 DEFINE FIELD IF NOT EXISTS priority ON job TYPE string DEFAULT "normal";
 DEFINE FIELD IF NOT EXISTS status ON job TYPE object;
+DEFINE FIELD IF NOT EXISTS status.status ON job TYPE string;
+DEFINE FIELD IF NOT EXISTS status.started_at ON job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status.worker_id ON job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status.completed_at ON job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status.failed_at ON job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status.cancelled_at ON job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status.error ON job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status.attempts ON job TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS status.reason ON job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status.result ON job TYPE option<object>;
+DEFINE FIELD IF NOT EXISTS status.result.summary ON job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status.result.output ON job TYPE option<object>;
+DEFINE FIELD IF NOT EXISTS attempts ON job TYPE int DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS max_retries ON job TYPE int DEFAULT 3;
 DEFINE FIELD IF NOT EXISTS timeout_secs ON job TYPE int DEFAULT 300;
 DEFINE FIELD IF NOT EXISTS tags ON job TYPE array DEFAULT [];
+DEFINE FIELD IF NOT EXISTS tags.* ON job TYPE string;
 DEFINE FIELD IF NOT EXISTS created_at ON job TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON job TYPE datetime DEFAULT time::now();
 
@@ -89,6 +110,7 @@ DEFINE FIELD IF NOT EXISTS duration_ms ON job_history TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS error ON job_history TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS result_summary ON job_history TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS tags ON job_history TYPE array DEFAULT [];
+DEFINE FIELD IF NOT EXISTS tags.* ON job_history TYPE string;
 DEFINE FIELD IF NOT EXISTS created_at ON job_history TYPE string;
 DEFINE FIELD IF NOT EXISTS completed_at ON job_history TYPE datetime DEFAULT time::now();
 

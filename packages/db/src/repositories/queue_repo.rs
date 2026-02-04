@@ -1,11 +1,11 @@
 //! Queue repository for CRUD operations.
 
-use queue_core::{Queue, QueueId, QueueState, QueueStats, QueueConfig};
+use chrono::{DateTime, Utc};
+use queue_core::{Queue, QueueConfig, QueueId, QueueState, QueueStats};
 use serde::{Deserialize, Serialize};
 use surrealdb::sql::Thing;
-use chrono::{DateTime, Utc};
 
-use crate::{get_db, DbError};
+use crate::{DbError, get_db};
 
 /// Repository for queue persistence operations.
 pub struct QueueRepository;
@@ -52,22 +52,20 @@ struct QueueCreate {
 impl QueueRepository {
     /// Create a new queue in the database.
     pub async fn create(queue: &Queue) -> Result<Queue, DbError> {
-        let db = get_db();
+        let db = get_db()?;
         let queue_id = queue.id.to_string();
 
         // Use QueueCreate to omit datetime fields - let SurrealDB use defaults
         let create_data = QueueCreate {
             name: queue.name.clone(),
             description: queue.description.clone(),
-            state: queue.state.clone(),
+            state: queue.state,
             config: queue.config.clone(),
             stats: queue.stats.clone(),
         };
 
-        let record: Option<QueueRecord> = db
-            .create(("queue", &queue_id))
-            .content(create_data)
-            .await?;
+        let record: Option<QueueRecord> =
+            db.create(("queue", &queue_id)).content(create_data).await?;
 
         record
             .map(|r| r.into_queue(queue.id))
@@ -76,7 +74,7 @@ impl QueueRepository {
 
     /// Get a queue by ID.
     pub async fn get(id: QueueId) -> Result<Queue, DbError> {
-        let db = get_db();
+        let db = get_db()?;
 
         let record: Option<QueueRecord> = db.select(("queue", id.to_string())).await?;
 
@@ -87,7 +85,7 @@ impl QueueRepository {
 
     /// Get a queue by name.
     pub async fn get_by_name(name: &str) -> Result<Queue, DbError> {
-        let db = get_db();
+        let db = get_db()?;
         let name_owned = name.to_string();
 
         let mut result = db
@@ -111,20 +109,23 @@ impl QueueRepository {
 
     /// List all queues.
     pub async fn list() -> Result<Vec<Queue>, DbError> {
-        let db = get_db();
+        let db = get_db()?;
 
         let records: Vec<QueueRecord> = db.select("queue").await?;
 
-        Ok(records.into_iter().map(|r| {
-            let id_str = r.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
-            let queue_id = QueueId::parse(&id_str).unwrap_or_else(|_| QueueId::new());
-            r.into_queue(queue_id)
-        }).collect())
+        Ok(records
+            .into_iter()
+            .map(|r| {
+                let id_str = r.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                let queue_id = QueueId::parse(&id_str).unwrap_or_else(|_| QueueId::new());
+                r.into_queue(queue_id)
+            })
+            .collect())
     }
 
     /// List queues by state.
     pub async fn list_by_state(state: QueueState) -> Result<Vec<Queue>, DbError> {
-        let db = get_db();
+        let db = get_db()?;
 
         let mut result = db
             .query("SELECT * FROM queue WHERE state = $state ORDER BY created_at DESC")
@@ -133,16 +134,19 @@ impl QueueRepository {
 
         let records: Vec<QueueRecord> = result.take(0)?;
 
-        Ok(records.into_iter().map(|r| {
-            let id_str = r.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
-            let queue_id = QueueId::parse(&id_str).unwrap_or_else(|_| QueueId::new());
-            r.into_queue(queue_id)
-        }).collect())
+        Ok(records
+            .into_iter()
+            .map(|r| {
+                let id_str = r.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                let queue_id = QueueId::parse(&id_str).unwrap_or_else(|_| QueueId::new());
+                r.into_queue(queue_id)
+            })
+            .collect())
     }
 
     /// Update a queue's state.
     pub async fn update_state(id: QueueId, state: QueueState) -> Result<Queue, DbError> {
-        let db = get_db();
+        let db = get_db()?;
 
         // Use SurrealQL to set updated_at with time::now()
         let mut result = db
@@ -162,7 +166,7 @@ impl QueueRepository {
 
     /// Update a queue's statistics.
     pub async fn update_stats(id: QueueId, stats: &QueueStats) -> Result<Queue, DbError> {
-        let db = get_db();
+        let db = get_db()?;
         let stats_clone = stats.clone();
 
         // Use SurrealQL to set updated_at with time::now()
@@ -183,22 +187,18 @@ impl QueueRepository {
 
     /// Update a queue.
     pub async fn update(queue: &Queue) -> Result<Queue, DbError> {
-        let db = get_db();
+        let db = get_db()?;
 
-        // Use QueueCreate to avoid datetime serialization issues
-        let update_data = QueueCreate {
-            name: queue.name.clone(),
-            description: queue.description.clone(),
-            state: queue.state.clone(),
-            config: queue.config.clone(),
-            stats: queue.stats.clone(),
-        };
-
-        // Use SurrealQL to set updated_at with time::now()
         let mut result = db
-            .query("UPDATE type::thing('queue', $id) CONTENT $data SET updated_at = time::now() RETURN AFTER")
+            .query(
+                "UPDATE type::thing('queue', $id) SET name = $name, description = $description, state = $state, config = $config, stats = $stats, updated_at = time::now() RETURN AFTER",
+            )
             .bind(("id", queue.id.to_string()))
-            .bind(("data", update_data))
+            .bind(("name", queue.name.clone()))
+            .bind(("description", queue.description.clone()))
+            .bind(("state", queue.state))
+            .bind(("config", queue.config.clone()))
+            .bind(("stats", queue.stats.clone()))
             .await?;
 
         let records: Vec<QueueRecord> = result.take(0)?;
@@ -212,7 +212,7 @@ impl QueueRepository {
 
     /// Delete a queue.
     pub async fn delete(id: QueueId) -> Result<(), DbError> {
-        let db = get_db();
+        let db = get_db()?;
 
         let _: Option<QueueRecord> = db.delete(("queue", id.to_string())).await?;
 
@@ -221,7 +221,7 @@ impl QueueRepository {
 
     /// Check if a queue exists.
     pub async fn exists(id: QueueId) -> Result<bool, DbError> {
-        let db = get_db();
+        let db = get_db()?;
 
         let record: Option<QueueRecord> = db.select(("queue", id.to_string())).await?;
 
@@ -230,7 +230,7 @@ impl QueueRepository {
 
     /// Check if a queue name exists.
     pub async fn name_exists(name: &str) -> Result<bool, DbError> {
-        let db = get_db();
+        let db = get_db()?;
         let name_owned = name.to_string();
 
         let mut result = db
@@ -245,6 +245,6 @@ impl QueueRepository {
 
         let counts: Vec<CountResult> = result.take(0)?;
 
-        Ok(counts.first().map_or(false, |c| c.count > 0))
+        Ok(counts.first().is_some_and(|c| c.count > 0))
     }
 }

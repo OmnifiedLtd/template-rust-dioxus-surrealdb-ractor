@@ -1,7 +1,7 @@
 //! Queue actor for managing jobs in a single queue.
 
-use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 use chrono::Utc;
 use queue_core::{Job, JobEvent, JobId, JobStatus, Queue, QueueState, QueueStats};
@@ -138,17 +138,23 @@ impl Actor for QueueActor {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             QueueMessage::Enqueue { job, reply } => {
+                let job = *job;
                 if !state.queue.is_accepting_jobs() {
                     let _ = reply.send(Err("Queue is not accepting jobs".into()));
                     return Ok(());
                 }
 
                 // Check queue size limit
-                if let Some(max_size) = state.queue.config.max_queue_size {
-                    if state.pending.len() >= max_size {
-                        let _ = reply.send(Err("Queue is full".into()));
-                        return Ok(());
-                    }
+                if let Some(max_size) = state.queue.config.max_queue_size
+                    && state.pending.len() >= max_size
+                {
+                    let _ = reply.send(Err("Queue is full".into()));
+                    return Ok(());
+                }
+
+                if let Err(e) = db::repositories::JobRepository::create(&job).await {
+                    let _ = reply.send(Err(format!("Failed to persist job: {}", e)));
+                    return Ok(());
                 }
 
                 let job_id = job.id;
@@ -179,12 +185,31 @@ impl Actor for QueueActor {
                 if let Some(priority_job) = state.pending.pop() {
                     let mut job = priority_job.job;
                     let now = Utc::now();
+                    let previous_attempts = job.attempts;
 
+                    job.attempts = job.attempts.saturating_add(1);
                     job.status = JobStatus::Running {
                         started_at: now,
                         worker_id: worker_id.clone(),
                     };
                     job.updated_at = now;
+
+                    if let Err(e) = db::repositories::JobRepository::update_status(
+                        job.id,
+                        &job.status,
+                        job.attempts,
+                    )
+                    .await
+                    {
+                        tracing::warn!("Failed to mark job {} running: {}", job.id, e);
+                        job.attempts = previous_attempts;
+                        job.status = JobStatus::Pending;
+                        job.updated_at = now;
+                        state.pending.push(PriorityJob { job });
+                        state.update_stats();
+                        let _ = reply.send(None);
+                        return Ok(());
+                    }
 
                     state.jobs.insert(job.id, job.clone());
                     state.running.insert(job.id, job.clone());
@@ -223,6 +248,16 @@ impl Actor for QueueActor {
                     };
                     job.updated_at = now;
 
+                    if let Err(e) = db::repositories::JobRepository::update_status(
+                        job_id,
+                        &job.status,
+                        job.attempts,
+                    )
+                    .await
+                    {
+                        tracing::warn!("Failed to update job {} status: {}", job_id, e);
+                    }
+
                     state.jobs.insert(job_id, job.clone());
                     state.queue.stats.completed += 1;
 
@@ -253,11 +288,7 @@ impl Actor for QueueActor {
                         _ => now,
                     };
 
-                    let attempts = match &job.status {
-                        JobStatus::Failed { attempts, .. } => *attempts + 1,
-                        _ => 1,
-                    };
-
+                    let attempts = job.attempts;
                     let will_retry = attempts < job.max_retries;
 
                     job.status = JobStatus::Failed {
@@ -278,8 +309,20 @@ impl Actor for QueueActor {
                     });
 
                     if will_retry {
-                        // Re-enqueue for retry
                         job.status = JobStatus::Pending;
+                        job.updated_at = now;
+
+                        if let Err(e) = db::repositories::JobRepository::update_status(
+                            job_id,
+                            &job.status,
+                            job.attempts,
+                        )
+                        .await
+                        {
+                            tracing::warn!("Failed to mark job {} pending: {}", job_id, e);
+                        }
+
+                        // Re-enqueue for retry
                         state.pending.push(PriorityJob { job: job.clone() });
 
                         state.broadcast(JobEvent::JobRetrying {
@@ -289,6 +332,16 @@ impl Actor for QueueActor {
                             timestamp: now,
                         });
                     } else {
+                        if let Err(e) = db::repositories::JobRepository::update_status(
+                            job_id,
+                            &job.status,
+                            job.attempts,
+                        )
+                        .await
+                        {
+                            tracing::warn!("Failed to update job {} status: {}", job_id, e);
+                        }
+
                         state.queue.stats.failed += 1;
 
                         // Archive failed job
@@ -302,7 +355,11 @@ impl Actor for QueueActor {
                 }
             }
 
-            QueueMessage::CancelJob { job_id, reason, reply } => {
+            QueueMessage::CancelJob {
+                job_id,
+                reason,
+                reply,
+            } => {
                 if let Some(mut job) = state.jobs.get(&job_id).cloned() {
                     let now = Utc::now();
 
@@ -315,6 +372,16 @@ impl Actor for QueueActor {
                         reason: reason.clone(),
                     };
                     job.updated_at = now;
+
+                    if let Err(e) = db::repositories::JobRepository::update_status(
+                        job_id,
+                        &job.status,
+                        job.attempts,
+                    )
+                    .await
+                    {
+                        tracing::warn!("Failed to update job {} status: {}", job_id, e);
+                    }
 
                     state.jobs.insert(job_id, job.clone());
 
@@ -343,6 +410,17 @@ impl Actor for QueueActor {
                     job.status = JobStatus::Pending;
                     job.updated_at = now;
 
+                    if let Err(e) = db::repositories::JobRepository::update_status(
+                        job_id,
+                        &job.status,
+                        job.attempts,
+                    )
+                    .await
+                    {
+                        let _ = reply.send(Err(format!("Failed to update job: {}", e)));
+                        return Ok(());
+                    }
+
                     state.jobs.insert(job_id, job.clone());
                     state.pending.push(PriorityJob { job: job.clone() });
                     state.update_stats();
@@ -368,7 +446,7 @@ impl Actor for QueueActor {
                     .filter(|j| {
                         status_filter
                             .as_ref()
-                            .map_or(true, |s| j.status.as_str() == s)
+                            .is_none_or(|s| j.status.as_str() == s)
                     })
                     .take(limit)
                     .cloned()
@@ -380,6 +458,15 @@ impl Actor for QueueActor {
                 let old_state = state.queue.state;
                 state.queue.state = QueueState::Paused;
                 state.queue.updated_at = Utc::now();
+
+                if let Err(e) = db::repositories::QueueRepository::update_state(
+                    state.queue.id,
+                    state.queue.state,
+                )
+                .await
+                {
+                    tracing::warn!("Failed to persist queue state: {}", e);
+                }
 
                 state.broadcast(JobEvent::QueueStateChanged {
                     queue_id: state.queue.id,
@@ -393,6 +480,15 @@ impl Actor for QueueActor {
                 let old_state = state.queue.state;
                 state.queue.state = QueueState::Running;
                 state.queue.updated_at = Utc::now();
+
+                if let Err(e) = db::repositories::QueueRepository::update_state(
+                    state.queue.id,
+                    state.queue.state,
+                )
+                .await
+                {
+                    tracing::warn!("Failed to persist queue state: {}", e);
+                }
 
                 state.broadcast(JobEvent::QueueStateChanged {
                     queue_id: state.queue.id,

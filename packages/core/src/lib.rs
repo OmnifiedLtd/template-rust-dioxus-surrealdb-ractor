@@ -5,10 +5,10 @@
 //! - Queue and QueueState for job containers
 //! - Events for real-time updates
 
+mod events;
 mod job;
 mod queue;
-mod events;
 
-pub use job::{Job, JobId, JobStatus, JobResult, Priority};
-pub use queue::{Queue, QueueId, QueueState, QueueConfig, QueueStats};
 pub use events::JobEvent;
+pub use job::{Job, JobId, JobResult, JobStatus, Priority};
+pub use queue::{Queue, QueueConfig, QueueId, QueueState, QueueStats};

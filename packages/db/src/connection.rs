@@ -1,9 +1,9 @@
 //! Database connection management with lazy initialization.
 
 use std::sync::LazyLock;
+use surrealdb::Surreal;
 use surrealdb::engine::any::{Any, connect};
 use surrealdb::opt::auth::Root;
-use surrealdb::Surreal;
 use thiserror::Error;
 use tokio::sync::OnceCell;
 
@@ -72,7 +72,11 @@ impl DbConfig {
     }
 
     /// Set root credentials for authentication.
-    pub fn with_credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+    pub fn with_credentials(
+        mut self,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
         self.credentials = Some((username.into(), password.into()));
         self
     }
@@ -106,15 +110,13 @@ pub async fn init_db(config: DbConfig) -> Result<&'static Database, DbError> {
 
         // Authenticate if credentials provided
         if let Some((username, password)) = &config.credentials {
-            db.signin(Root {
-                username,
-                password,
-            })
-            .await?;
+            db.signin(Root { username, password }).await?;
         }
 
         // Select namespace and database
-        db.use_ns(&config.namespace).use_db(&config.database).await?;
+        db.use_ns(&config.namespace)
+            .use_db(&config.database)
+            .await?;
 
         tracing::info!(
             "Connected to database: {}/{}",
@@ -129,15 +131,16 @@ pub async fn init_db(config: DbConfig) -> Result<&'static Database, DbError> {
 
 /// Get the database connection.
 ///
-/// Panics if the database hasn't been initialized yet.
-pub fn get_db() -> &'static Database {
-    DB.get()
-        .expect("Database not initialized - call init_db first")
+/// Returns an error if the database hasn't been initialized yet.
+#[allow(clippy::result_large_err)]
+pub fn get_db() -> Result<&'static Database, DbError> {
+    DB.get().ok_or(DbError::NotInitialized)
 }
 
 /// Try to get the database connection.
 ///
 /// Returns None if the database hasn't been initialized yet.
+#[allow(dead_code)]
 pub fn try_get_db() -> Option<&'static Database> {
     DB.get()
 }
