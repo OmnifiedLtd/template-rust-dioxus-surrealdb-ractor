@@ -126,6 +126,49 @@ volumes:
 |----------|-------------|---------|
 | `RAILWAY_ENVIRONMENT` | Triggers file-based persistence when set | (unset) |
 | `DATABASE_PATH` | Custom database path (future) | `./data/surrealdb` |
+| `STORAGE_BACKEND` | Object storage backend: `s3`, `filesystem`, `memory` | `filesystem` |
+| `STORAGE_FS_ROOT` | Root directory when `STORAGE_BACKEND=filesystem` | `./data/object_store` |
+| `STORAGE_PREFIX` | Optional key prefix applied to all objects | (unset) |
+| `S3_BUCKET` | Bucket name when `STORAGE_BACKEND=s3` | (required for `s3`) |
+| `AWS_REGION` | Region when `STORAGE_BACKEND=s3` | `us-east-1` |
+| `S3_ENDPOINT` | Custom endpoint for S3-compatible storage (MinIO, R2, etc.) | (unset) |
+| `S3_ALLOW_HTTP` | Allow plain HTTP for custom endpoints (`true`/`false`) | auto (true for `http://` endpoint) |
+| `S3_VIRTUAL_HOSTED_STYLE` | Use virtual-hosted style requests (`true`/`false`) | `false` |
+| `AWS_ACCESS_KEY_ID` | Access key for S3 (optional if using ambient AWS auth) | (unset) |
+| `AWS_SECRET_ACCESS_KEY` | Secret key for S3 (optional if using ambient AWS auth) | (unset) |
+| `AWS_SESSION_TOKEN` | Session token for S3 (optional) | (unset) |
+
+### Object Storage Example (S3-Compatible)
+
+The example app includes a demo job type `persist-object` that writes a JSON value to object storage and reads it back to prove persistence.
+
+Example payload:
+
+```json
+{
+  "key": "demo/hello.json",
+  "data": { "message": "Hello from object storage" }
+}
+```
+
+Local dev (filesystem):
+
+```bash
+export STORAGE_BACKEND=filesystem
+export STORAGE_FS_ROOT=./data/object_store
+```
+
+S3-compatible (example: MinIO on localhost):
+
+```bash
+export STORAGE_BACKEND=s3
+export S3_BUCKET=demo
+export AWS_REGION=us-east-1
+export S3_ENDPOINT=http://localhost:9000
+export S3_ALLOW_HTTP=true
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+```
 
 ### Queue Configuration
 
@@ -215,4 +258,3 @@ and serve:
 ```bash
 dx serve
 ```
-

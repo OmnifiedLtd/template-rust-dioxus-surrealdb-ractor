@@ -49,6 +49,25 @@ async fn init_job_queue_inner() -> Result<(), Box<dyn std::error::Error>> {
 
     init_db(db_config).await?;
 
+    // Initialize object storage (S3-compatible / filesystem / in-memory).
+    //
+    // Behavior:
+    // - If STORAGE_BACKEND is set and invalid: fail fast.
+    // - Otherwise: fall back to in-memory if initialization fails (so the demo still boots).
+    let storage = match storage::Storage::from_env().await {
+        Ok(storage) => storage,
+        Err(e) => {
+            if std::env::var("STORAGE_BACKEND").is_ok() {
+                return Err(Box::new(e));
+            }
+            tracing::warn!(
+                "Storage init failed (falling back to in-memory). Error: {}",
+                e
+            );
+            storage::Storage::new(storage::StorageConfig::memory()).await?
+        }
+    };
+
     // Create handler registry with demo handlers
     let mut handlers = JobHandlerRegistry::new();
 
@@ -89,6 +108,52 @@ async fn init_job_queue_inner() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 Ok(JobResult::new("Success"))
             }
+        })
+    }));
+
+    // Demo: Persist payload to object storage (S3-compatible / filesystem / memory).
+    //
+    // Payload:
+    // - `key` (optional): object key to write to
+    // - `data` (optional): JSON value to write; defaults to the full payload
+    //
+    // Output includes the storage backend kind and a read-back JSON value to demonstrate persistence.
+    let storage_for_handler = storage.clone();
+    handlers.register(FnHandler::new("persist-object", move |job: &Job| {
+        let storage = storage_for_handler.clone();
+        let payload = job.payload.clone();
+        let job_id = job.id.to_string();
+        Box::pin(async move {
+            let key = payload
+                .get("key")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| format!("jobs/{job_id}/payload.json"));
+
+            let data = payload.get("data").cloned().unwrap_or(payload);
+
+            storage
+                .put_json_value(&key, &data)
+                .await
+                .map_err(|e| e.to_string())?;
+            let read_back = storage
+                .get_json_value(&key)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let mut out = serde_json::Map::new();
+            out.insert(
+                "backend".to_string(),
+                serde_json::Value::String(storage.kind_str().to_string()),
+            );
+            out.insert("key".to_string(), serde_json::Value::String(key));
+            out.insert("read_back".to_string(), read_back);
+
+            Ok(JobResult::with_output(
+                "Persisted payload to object storage",
+                serde_json::Value::Object(out),
+            ))
         })
     }));
 

@@ -12,9 +12,18 @@ serde_json = { workspace = true }
 # Server-only dependencies
 db = { workspace = true, optional = true }
 actors = { workspace = true, optional = true }
+storage = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
 [features]
-server = ["dioxus/server", "dep:db", "dep:actors", "dep:tokio", "dep:futures-util", "dep:tracing"]
+server = [
+    "dioxus/server",
+    "dep:db",
+    "dep:actors",
+    "dep:storage",
+    "dep:tokio",
+    "dep:futures-util",
+    "dep:tracing",
+]
