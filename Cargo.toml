@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "packages/core",
     "packages/db",
+    "packages/storage",
     "packages/actors",
     "packages/ui",
     "packages/web",
@@ -37,3 +38,4 @@ db = { path = "packages/db" }
 actors = { path = "packages/actors" }
 ui = { path = "packages/ui" }
 api = { path = "packages/api" }
+storage = { path = "packages/storage" }

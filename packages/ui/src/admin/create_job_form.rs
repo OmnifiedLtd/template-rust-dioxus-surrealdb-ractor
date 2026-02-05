@@ -84,6 +84,7 @@ pub fn CreateJobForm(props: CreateJobFormProps) -> Element {
                     option { value: "echo", "Echo" }
                     option { value: "sleep", "Sleep" }
                     option { value: "fail", "Fail (for testing)" }
+                    option { value: "persist-object", "Persist Object (S3/filesystem/memory)" }
                 }
             }
 
