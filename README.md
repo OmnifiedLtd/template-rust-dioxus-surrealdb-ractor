@@ -1,3 +1,146 @@
+# Dioxus + Ractor + SurrealDB Job Queue Template
+
+A full-stack Rust application template featuring a job queue system with an admin dashboard. Built with Dioxus 0.7 for the frontend, Ractor for actor-based concurrency, and SurrealDB for persistence.
+
+## Features
+
+- **Job Queue System**: Priority-based job scheduling with retry support
+- **Admin Dashboard**: Real-time monitoring and management UI at `/admin`
+- **Durable Persistence**: Jobs survive server restarts with SurrealDB
+- **Actor-based Architecture**: Scalable, fault-tolerant design with Ractor
+
+---
+
+## Persistence Strategy
+
+The job queue system uses SurrealDB for persistence with two modes:
+
+### Development Mode (In-Memory)
+
+By default, local development uses an **in-memory database** for fast iteration:
+
+```rust
+DbConfig::memory()  // Data is lost when server stops
+```
+
+This is ideal for development because:
+- Instant startup (no disk I/O)
+- Clean slate on each restart
+- No leftover test data
+
+### Production Mode (File-Based)
+
+When deployed (detected via `RAILWAY_ENVIRONMENT` env var), the system automatically switches to **file-based persistence**:
+
+```rust
+DbConfig::file("./data/surrealdb")  // Data persists to disk
+```
+
+You can also force file-based storage locally by setting:
+
+```bash
+export RAILWAY_ENVIRONMENT=production
+```
+
+### Job Rehydration on Restart
+
+When the server restarts, the system automatically:
+
+1. **Resets stale "running" jobs** → Jobs that were mid-execution when the server stopped are reset to "pending" status
+2. **Loads pending jobs** → All pending jobs are loaded from the database into memory for processing
+3. **Preserves queue state** → Paused/running state and configurations are restored
+
+This ensures **no jobs are lost** during deployments or crashes.
+
+---
+
+## Volume Setup for Cloud Deployment
+
+To make your job queue durable in production, you need to configure a persistent volume.
+
+### Railway
+
+1. **Create a volume** in your Railway project:
+   ```
+   Railway Dashboard → Your Service → Volumes → Add Volume
+   ```
+
+2. **Mount path**: `/app/data`
+
+3. **Update the storage path** in `packages/api/src/init.rs` if needed:
+   ```rust
+   DbConfig::file("/app/data/surrealdb")
+   ```
+
+4. Railway will automatically persist data across deployments.
+
+### Fly.io
+
+1. **Create a volume**:
+   ```bash
+   fly volumes create data --region <your-region> --size 1
+   ```
+
+2. **Add to `fly.toml`**:
+   ```toml
+   [mounts]
+     source = "data"
+     destination = "/app/data"
+   ```
+
+3. **Update the storage path** in your code:
+   ```rust
+   DbConfig::file("/app/data/surrealdb")
+   ```
+
+4. **Deploy**:
+   ```bash
+   fly deploy
+   ```
+
+### Docker (Self-Hosted)
+
+```bash
+docker run -v /path/on/host:/app/data your-image
+```
+
+Or with Docker Compose:
+
+```yaml
+services:
+  app:
+    volumes:
+      - app_data:/app/data
+
+volumes:
+  app_data:
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RAILWAY_ENVIRONMENT` | Triggers file-based persistence when set | (unset) |
+| `DATABASE_PATH` | Custom database path (future) | `./data/surrealdb` |
+
+### Queue Configuration
+
+Queues are configured in code with sensible defaults:
+
+```rust
+let queue = Queue::new("my-queue")
+    .with_description("Processing queue")
+    .with_concurrency(4)           // Max parallel workers
+    .with_max_retries(3)           // Retry failed jobs
+    .with_timeout(Duration::from_secs(300));
+```
+
+---
+
 # Development
 
 Your new workspace contains a member crate for each of the web, desktop and mobile platforms, a `ui` crate for shared components and a `api` crate for shared backend logic:

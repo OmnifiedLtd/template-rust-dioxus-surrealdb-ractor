@@ -405,4 +405,57 @@ impl JobRepository {
             throughput_per_min: None, // TODO: Calculate from history
         })
     }
+
+    /// Reset all "running" jobs for a queue to "pending" status.
+    ///
+    /// This is used during server restart to recover jobs that were interrupted
+    /// when the server crashed or was stopped. Jobs in "running" status at restart
+    /// time are stale - there's no worker processing them anymore.
+    pub async fn reset_running_to_pending_for_queue(queue_id: QueueId) -> Result<u64, DbError> {
+        let db = get_db()?;
+
+        let mut result = db
+            .query(
+                r#"
+                UPDATE job
+                SET status = { status: "pending" }, updated_at = time::now()
+                WHERE queue_id = $queue_id AND status.status = "running"
+                RETURN AFTER
+                "#,
+            )
+            .bind(("queue_id", queue_id.to_string()))
+            .await?;
+
+        let records: Vec<JobRecord> = result.take(0)?;
+        Ok(records.len() as u64)
+    }
+
+    /// Get all non-terminal jobs for a queue (pending + running).
+    ///
+    /// Used during rehydration to load the full working set of jobs into memory.
+    pub async fn get_active_for_queue(queue_id: QueueId) -> Result<Vec<Job>, DbError> {
+        let db = get_db()?;
+
+        let mut result = db
+            .query(
+                r#"
+                SELECT * FROM job
+                WHERE queue_id = $queue_id AND (status.status = "pending" OR status.status = "running")
+                ORDER BY priority DESC, created_at ASC
+                "#,
+            )
+            .bind(("queue_id", queue_id.to_string()))
+            .await?;
+
+        let records: Vec<JobRecord> = result.take(0)?;
+
+        Ok(records
+            .into_iter()
+            .map(|r| {
+                let id_str = r.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                let job_id = JobId::parse(&id_str).unwrap_or_else(|_| JobId::new());
+                r.into_job(job_id)
+            })
+            .collect())
+    }
 }

@@ -124,9 +124,60 @@ impl Actor for QueueActor {
     async fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
+        mut args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         tracing::info!("Starting queue actor: {}", args.queue.name);
+
+        // Rehydrate jobs from database on startup
+        // First, reset any "running" jobs to "pending" - they were interrupted by server restart
+        match db::repositories::JobRepository::reset_running_to_pending_for_queue(args.queue.id)
+            .await
+        {
+            Ok(count) if count > 0 => {
+                tracing::info!(
+                    "Reset {} stale running jobs to pending for queue {}",
+                    count,
+                    args.queue.name
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to reset running jobs for queue {}: {}",
+                    args.queue.name,
+                    e
+                );
+            }
+            _ => {}
+        }
+
+        // Load pending jobs from database into memory
+        match db::repositories::JobRepository::get_pending_for_queue(args.queue.id, 10000).await {
+            Ok(jobs) => {
+                let job_count = jobs.len();
+                for job in jobs {
+                    args.jobs.insert(job.id, job.clone());
+                    args.pending.push(PriorityJob { job });
+                }
+                if job_count > 0 {
+                    tracing::info!(
+                        "Rehydrated {} pending jobs for queue {}",
+                        job_count,
+                        args.queue.name
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load pending jobs for queue {}: {}",
+                    args.queue.name,
+                    e
+                );
+            }
+        }
+
+        // Update stats to reflect loaded jobs
+        args.update_stats();
+
         Ok(args)
     }
 
